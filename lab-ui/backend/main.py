@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import asyncio
 import sys
@@ -28,12 +29,20 @@ except Exception as _ce_err:
     _ce = None  # type: ignore[assignment]
     _CE_ERR = str(_ce_err)
 
+import lab_identity as _li
+
 
 class LaunchRequest(BaseModel):
     campaign: str
     mode: str = "live"                          # "live" | "preseed"
     phase: Union[int, str] = "all"              # int phase number or "all"
     volume: str = "medium"                      # "low" | "medium" | "high"
+
+
+class LabRegisterRequest(BaseModel):
+    name: str
+    s1_hec_url: str
+    s1_hec_token: str
 
 SCRIPTS_DIR = Path("/app/attack-scripts")
 
@@ -77,10 +86,22 @@ def build_server_config() -> dict:
         "delay":  _f("LAB_ATTACK_DELAY", "0.5"),
         "jitter": _f("LAB_ATTACK_JITTER", "0.3"),
         "s1_console_url": os.getenv("LAB_S1_CONSOLE_URL", ""),  # display-only, non-secret
+        # Multi-tenant lab (feat/multi-tenant-relay): non-secret flags the UI reads
+        # to decide whether to show the Lab Identity / Admin surfaces.
+        "lab_domain": os.getenv("LAB_DOMAIN", "lab.soledrop.co"),
+        "relay_configured": bool(os.getenv("RELAY_URL")),
+        "admin_enabled": bool(os.getenv("ADMIN_TOKEN")),  # console deployment only
     }
 
 
 SERVER_CONFIG = build_server_config()
+
+# Re-apply a persisted lab identity at startup so this instance keeps targeting
+# its registered subdomain across restarts (and reflect it into the subprocess
+# scenario default so /ws/run uses it too).
+_BOOT_IDENTITY = _li.bootstrap()
+if _BOOT_IDENTITY and _BOOT_IDENTITY.get("shop_url"):
+    SERVER_CONFIG["shop_url"] = _BOOT_IDENTITY["shop_url"]
 
 
 @app.get("/api/health")
@@ -285,3 +306,74 @@ async def campaign_clear_incident():
     _require_engine()
     _ce.clear_incident()
     return {"cleared": True}
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant lab identity (feat/multi-tenant-relay)
+# ---------------------------------------------------------------------------
+@app.get("/api/lab/identity")
+async def lab_get_identity():
+    """Current lab identity for this instance (or null if unregistered)."""
+    return {
+        "identity": _li.load_identity(),
+        "relay_configured": bool(os.getenv("RELAY_URL")),
+        "lab_domain": os.getenv("LAB_DOMAIN", "lab.soledrop.co"),
+    }
+
+
+@app.post("/api/lab/register")
+def lab_register(body: LabRegisterRequest):
+    """Register this instance's lab identity and enroll it with the relay.
+
+    Sets SHOP_URL_OVERRIDE so all shop-targeted attacks (incl. the CTF) hit this
+    instance's own subdomain. Sync def → FastAPI runs the blocking relay call in
+    a threadpool. 400 = bad input, 502 = relay unreachable/rejected.
+    """
+    try:
+        ident = _li.register(body.name, body.s1_hec_url, body.s1_hec_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if ident.get("shop_url"):
+        SERVER_CONFIG["shop_url"] = ident["shop_url"]
+    return {"ok": True, "identity": ident}
+
+
+# ---------------------------------------------------------------------------
+# Admin console proxy → relay /admin/* (ONLY when ADMIN_TOKEN is configured,
+# i.e. the one-flare.com deployment; partner instances get 403)
+# ---------------------------------------------------------------------------
+def _require_admin():
+    if not _li.admin_enabled():
+        raise HTTPException(status_code=403, detail="Admin is not enabled on this instance")
+
+
+@app.get("/api/admin/registry")
+def admin_registry():
+    _require_admin()
+    status, body = _li.admin_request("GET", "/admin/registry")
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.get("/api/admin/history")
+def admin_history():
+    _require_admin()
+    status, body = _li.admin_request("GET", "/admin/history")
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.post("/api/admin/user/{subdomain}/{action}")
+def admin_user_action(subdomain: str, action: str):
+    _require_admin()
+    if action not in ("enable", "disable"):
+        raise HTTPException(status_code=400, detail="action must be 'enable' or 'disable'")
+    status, body = _li.admin_request("POST", f"/admin/user/{subdomain}/{action}")
+    return JSONResponse(status_code=status, content=body)
+
+
+@app.delete("/api/admin/user/{subdomain}")
+def admin_user_delete(subdomain: str):
+    _require_admin()
+    status, body = _li.admin_request("DELETE", f"/admin/user/{subdomain}")
+    return JSONResponse(status_code=status, content=body)

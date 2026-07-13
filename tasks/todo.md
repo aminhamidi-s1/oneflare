@@ -212,3 +212,99 @@ S1 site OneFlare id 2433185103040607397. Only Gateway HTTP/DNS + ZT + Audit flow
 - [ ] Author + live-validate detections (WAF attack score, polymorphic bot BotScore/JA4) to 0 FP.
 - [ ] Repoint scenario scripts 01/02/06/07/08 to *.one-flare.com (config override).
 - [ ] AI Gateway: create + route Pyxis chat (locate real chat endpoint).
+
+---
+
+# Multi-Tenant Relay — SoleDrop lab as a self-serve, isolated, dockerized lab
+
+Branch: `feat/multi-tenant-relay` (NOT merging to main until validated). Goal: N users
+(~30) each run their own dockerized OneFlare instance against the SHARED soledrop.co
+Cloudflare zone/workers, and each user's Cloudflare security telemetry lands ONLY in
+THEIR own SentinelOne site. Minimal user interaction; admin control from one-flare.com.
+
+## Architecture (decided)
+Cloudflare Logpush has no per-record routing → isolate via a **discriminator + fan-out relay**:
+- Each instance targets a unique host `<name>.lab.soledrop.co` (wildcard, single worker route).
+- ONE shared Logpush job (http + firewall) on soledrop.co filtered to `.lab.soledrop.co`
+  → a **relay Worker** (owned by admin) that reads `ClientRequestHost`, looks up
+  `{subdomain → user's S1 HEC dest}` in a registry, and forwards ONLY matching records to
+  that user's S1 HEC (optionally rewriting host back to shop.soledrop.co).
+- Write-time isolation → each user's S1 site holds only their traffic → detections stay
+  GENERIC (no per-user templating) and users never filter in S1.
+- User registration writes ONE registry row. NOTHING per-user is created on Cloudflare
+  (no per-user DNS record, no per-user Logpush job) → scales to 30+, trivially tear-down-able.
+- Users never get a Cloudflare token (can't mint one for a shared account anyway). Settings
+  collects only their S1 HEC write token (+ optionally an S1 mgmt token to auto-deploy rules).
+
+## Verified Cloudflare state (2026-07-13, via API)
+- soledrop.co zone `cf4d15af4a7eb86b033f859aefec1047` (Enterprise). Only DNS = shop.soledrop.co
+  (AAAA 100:: proxied); route `*shop.soledrop.co/*` → shop-soledrop-worker. No wildcard yet.
+- Existing Logpush (KEEP, don't touch): http `1783031` (filter ClientRequestHost eq
+  shop.soledrop.co → S1 token …2BuJK6L…), firewall `1783030` (NO filter, same dest).
+- Account `b8e637d5097fff0c694c3290ba81563e`. Workers: shop-soledrop-worker, novamind-lab-ui
+  (= one-flare.com admin console), oneflare-dashmgmt, acmecorp-{shop,portal,api}.
+- Config plumbing already exists: attack-scripts/config.py honors SHOP_URL_OVERRIDE; lab-ui
+  backend passes it per-run. So subdomain targeting = set the override. No attack-script edits.
+
+## A. Cloudflare one-time admin setup (soledrop.co) — additive, breaks nothing
+- [x] Add wildcard DNS `*.lab.soledrop.co` (AAAA 100:: proxied). DONE (id 2dc7cbf0…, 2026-07-13).
+- [x] Add worker route `*.lab.soledrop.co/*` → shop-soledrop-worker. DONE (id 2f47151b…).
+- [ ] **BLOCKER (user + Cloudflare SE):** activate ACM + provision Advanced Cert for
+      `*.lab.soledrop.co`. Chose the 2-level scheme; existing Universal SSL only covers
+      `*.soledrop.co` (1 level) so lab subdomains fail TLS handshake until an ACM advanced cert
+      exists. STEPS: (1) user works with Cloudflare SE to enable **Advanced Certificate Manager**
+      on the soledrop.co zone (entitlement). (2) Dashboard → soledrop.co → SSL/TLS → Edge
+      Certificates → Order Advanced Certificate → hosts `*.lab.soledrop.co` + `lab.soledrop.co`,
+      CA Google/LE, TXT validation (auto), 90d auto-renew → wait for Active. (3) Verify:
+      `echo | openssl s_client -connect test.lab.soledrop.co:443 -servername test.lab.soledrop.co
+      | openssl x509 -noout -subject`. Deploy token LACKS Certificates:Edit (9109) — either grant
+      it (Zone→SSL and Certificates→Edit) so we script the order, or do it in the dashboard.
+      FALLBACK if no ACM: switch to single-level `lab-<name>.soledrop.co` (covered by existing
+      cert; ~2-min API change — delete *.lab DNS/route, add *.soledrop.co DNS + lab-*.soledrop.co/* route).
+- [ ] Create 2 Logpush jobs (http_requests + firewall_events) filter `ClientRequestHost contains
+      ".lab.soledrop.co"`, destination = relay Worker URL. (Zone has headroom: 2/limit used.)
+      Blocked on relay URL existing + Logpush HTTP ownership-challenge handling in the relay.
+- [ ] Confirm Enterprise products on soledrop.co: WAF ML attack scores, Bot Mgmt (JA4 + score),
+      Firewall for AI — score-based detection arms need them (Box2 JA4, Box3 injection score).
+
+## B. Relay Worker (`oneflare-logpush-relay`, admin-owned) — AUTHORED (commit e31cb63)
+      Files: cloudflare/workers/logpush-relay/{wrangler.toml,src/index.js,README.md}. node --check OK.
+      Reviewed + hardened: per-DISTINCT-host KV reads (not per-record), teardown-race guard on
+      counter write-back, S1 tokens redacted, waitUntil fast-ack. NOT deployed yet.
+- [x] Ingest endpoint: validation-ping short-circuit + gunzip + parse Logpush NDJSON batches.
+- [x] Registry store (KV `REGISTRY`): {subdomain → {name, s1_hec_url, s1_hec_token, created, status,
+      forwarded, last_seen}} + rolling `__history__` audit + `__unknown__:` drop counters.
+- [x] Routing: group-by-host; POST to user's S1 HEC (Authorization: <token>, raw NDJSON); drop unknown
+      hosts. Optional REWRITE_HOST → shop.soledrop.co.
+- [x] Registration API: `POST /register` gated by LAB_ENROLL_CODE; idempotent re-register.
+- [x] Admin API: GET registry/history, POST enable/disable, DELETE (teardown=row delete). ADMIN_TOKEN.
+- [ ] DEPLOY: `wrangler kv namespace create REGISTRY` → set id in wrangler.toml; `wrangler secret put
+      LAB_ENROLL_CODE ADMIN_TOKEN`; `wrangler deploy`. Then feed its URL to the Logpush job (A).
+- [ ] VERIFY (unverified inferences): S1 HEC POST format (Authorization header no Bearer, raw NDJSON to
+      /services/collector/raw?sourcetype=…) + exact Logpush HTTP ownership-challenge behavior — confirm on deploy.
+
+## C. lab-ui docker instance (Settings → auto-config)
+- [ ] Settings "Lab Identity": name → computes `<name>.lab.soledrop.co`; S1 HEC URL + write token.
+- [ ] On Save (minimal interaction): set SHOP/PORTAL/API overrides to the subdomain AND
+      POST /register to the relay. One click, everything else automatic.
+- [ ] Backend: registration proxy endpoint; env RELAY_URL, LAB_ENROLL_CODE. Update .env.example.
+- [x] DECISION (2026-07-13): detections are deployed MANUALLY by each user for now. Settings
+      collects only the S1 HEC write token (no mgmt token). Auto-deploy script = future, deferred.
+
+## D. one-flare.com admin console (novamind-lab-ui)
+- [ ] Admin login/role on top of the existing Cloudflare Access gate.
+- [ ] Admin page: view/control ALL subdomains ↔ users ↔ S1 sites; registration/teardown history.
+- [ ] Wire to relay Admin API. Teardown = delete registry row (no CF calls).
+
+## E. Local docker dev environment
+- [x] Feature branch created; SoleDrop cutover committed as foundation (e7724c3).
+- [ ] Bring up baseline `lab-ui/docker-compose` with current code (host-build dist; npm blocked in-container).
+- [ ] Add local relay (wrangler dev/miniflare) + mock Logpush replay for offline routing tests.
+- [ ] Document the dev loop: attacks hit REAL edge (`<name>.lab.soledrop.co`), relay via tunnel, watch own S1 site.
+
+## Constraints / gotchas
+- Full chain can't be tested purely offline: WAF/bot/AI scores + firewall blocks are edge-generated;
+  Logpush originates at Cloudflare. Local = UI + relay logic + mock replay; edge = real requests.
+- request.cf exposes only SOME scores (not the full Logpush field set) → worker-tee rejected; Logpush→relay is faithful.
+- Wildcard is single-label: `*.lab.soledrop.co` matches `alice.lab.soledrop.co`, NOT `shop.alice.…`.
+  CTF is shop-only so flat per-user host is fine; multi-service isolation is a later extension.

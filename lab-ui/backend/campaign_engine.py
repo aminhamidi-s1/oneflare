@@ -101,7 +101,10 @@ def _signal_shop_incident(active: bool) -> bool:
         key = getattr(_cfg, "INCIDENT_KEY", "") or ""
         if not key:
             return False
-        target = CAMPAIGNS.get("ctf", {}).get("target_url", "https://shop.soledrop.co")
+        # Multi-tenant: the CTF (and its /status flip) follows this instance's
+        # registered lab subdomain when SHOP_URL_OVERRIDE is set.
+        target = (os.getenv("SHOP_URL_OVERRIDE")
+                  or CAMPAIGNS.get("ctf", {}).get("target_url", "https://shop.soledrop.co")).rstrip("/")
         payload = {
             "key":      key,
             "active":   active,
@@ -127,6 +130,14 @@ def _resolve_target(campaign_key: str) -> str:
     """
     # A hardcoded target_url on the campaign entry overrides role-based routing.
     entry = CAMPAIGNS.get(campaign_key, {})
+    # Multi-tenant lab: when this instance has a registered lab identity, its
+    # SHOP_URL_OVERRIDE (e.g. https://alice.lab.soledrop.co) redirects the CTF
+    # and any shop-role campaign to this instance's own subdomain, so its traffic
+    # is isolated to the user's SentinelOne site. Falls back to the hardcoded
+    # target_url / role routing when no override is set.
+    shop_override = os.getenv("SHOP_URL_OVERRIDE")
+    if shop_override and (campaign_key == "ctf" or entry.get("target_role") == "shop"):
+        return shop_override.rstrip("/")
     if entry.get("target_url"):
         return entry["target_url"]
     # Import config lazily (it reads env vars / .env.local)
