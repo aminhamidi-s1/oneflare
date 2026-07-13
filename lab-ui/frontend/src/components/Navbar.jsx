@@ -1,9 +1,11 @@
+import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
   Network,
   Settings,
   Target,
+  ShieldCheck,
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -37,6 +39,18 @@ function NavItem({ to, label, icon: Icon, location }) {
 
 export default function Navbar() {
   const location = useLocation()
+  // Admin nav link is gated server-side: only surfaced when this instance has
+  // ADMIN_ENABLED set (the relay operator's own console), never on partner
+  // instances registered against the multi-tenant relay.
+  const [adminEnabled, setAdminEnabled] = useState(false)
+  useEffect(() => {
+    let alive = true
+    fetch('/api/config')
+      .then(r => (r.ok ? r.json() : null))
+      .then(cfg => { if (alive && cfg?.admin_enabled) setAdminEnabled(true) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   return (
     <nav className="glass-nav sticky top-0 z-50">
@@ -65,6 +79,25 @@ export default function Navbar() {
             ))}
           </div>
         </div>
+
+        {/* Admin — only visible on relay operator instances (admin_enabled) */}
+        {adminEnabled && (
+          <NavLink
+            to="/admin"
+            className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 shrink-0 ${
+              location.pathname.startsWith('/admin')
+                ? 'text-orange-400 bg-orange-500/10'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+            }`}
+            aria-label="Admin"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden md:inline">Admin</span>
+            {location.pathname.startsWith('/admin') && (
+              <span className="absolute bottom-0 left-2 right-2 h-px bg-gradient-to-r from-orange-500 to-purple-500 rounded-full" />
+            )}
+          </NavLink>
+        )}
 
         {/* Settings — right-anchored */}
         <NavLink

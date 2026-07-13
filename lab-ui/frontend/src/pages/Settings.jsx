@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import {
   ChevronDown, ChevronUp, Shield, Globe, Eye, EyeOff,
   CheckCircle, XCircle, Download, Upload, Info, Zap, AlertTriangle,
-  History as HistoryIcon, Trash2, Clock, X,
+  History as HistoryIcon, Trash2, Clock, X, Fingerprint,
 } from 'lucide-react'
 import Badge from '../components/Badge.jsx'
 import { SCENARIOS } from '../data/scenarios.js'
@@ -265,6 +265,164 @@ function HistoryContent() {
   )
 }
 
+// ── Lab Identity ─────────────────────────────────────────────────────────────
+// Registers this instance under a unique subdomain (<name>.lab.soledrop.co) and
+// routes its Cloudflare telemetry to the operator's own SentinelOne site. The S1
+// HEC write token is never persisted client-side — it is only ever sent to our
+// own backend on submit.
+const LAB_NAME_KEY = 'oneflare_lab_name'
+const LAB_SUBDOMAIN_KEY = 'oneflare_lab_subdomain'
+
+function LabIdentitySection({ serverConfig }) {
+  const [name, setName] = useState(() => localStorage.getItem(LAB_NAME_KEY) || '')
+  const [s1HecUrl, setS1HecUrl] = useState('')
+  const [s1HecToken, setS1HecToken] = useState('')
+  const [identity, setIdentity] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [registering, setRegistering] = useState(false)
+  const [error, setError] = useState('')
+
+  const relayConfigured = serverConfig?.relay_configured ?? false
+  const labDomain = serverConfig?.lab_domain || 'lab.soledrop.co'
+
+  useEffect(() => {
+    let alive = true
+    fetch('/api/lab/identity')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!alive || !data) return
+        if (data.identity) {
+          setIdentity(data.identity)
+          setName(data.identity.name || '')
+          setS1HecUrl(data.identity.s1_hec_url || '')
+          localStorage.setItem(LAB_NAME_KEY, data.identity.name || '')
+          if (data.identity.subdomain) localStorage.setItem(LAB_SUBDOMAIN_KEY, data.identity.subdomain)
+        }
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [])
+
+  async function handleRegister(e) {
+    e.preventDefault()
+    setRegistering(true)
+    setError('')
+    try {
+      const res = await fetch('/api/lab/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, s1_hec_url: s1HecUrl, s1_hec_token: s1HecToken }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(data.detail || `Registration failed (HTTP ${res.status})`)
+        return
+      }
+      setIdentity(data.identity)
+      setS1HecToken('')
+      if (data.identity?.name) localStorage.setItem(LAB_NAME_KEY, data.identity.name)
+      if (data.identity?.subdomain) localStorage.setItem(LAB_SUBDOMAIN_KEY, data.identity.subdomain)
+    } catch (err) {
+      setError('Could not reach backend. Is Docker running?')
+    } finally {
+      setRegistering(false)
+    }
+  }
+
+  return (
+    <Section title="Lab Identity" icon={Fingerprint} defaultOpen={true}>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-400 leading-relaxed">
+          Registering a name gives this instance a unique subdomain{' '}
+          <span className="font-mono text-slate-300">&lt;name&gt;.{labDomain}</span> and routes its
+          Cloudflare telemetry to <strong className="text-slate-200">your</strong> SentinelOne site.
+        </p>
+
+        {identity && (
+          <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold block mb-0.5">Current subdomain</span>
+              <span className="font-mono text-sm text-purple-300">{identity.subdomain}</span>
+            </div>
+            <span className={`inline-flex items-center rounded-full font-semibold px-2 py-0.5 text-xs ${
+              identity.enrolled
+                ? 'bg-green-500/15 text-green-400 border border-green-500/30'
+                : 'bg-slate-500/15 text-slate-400 border border-slate-500/30'
+            }`}>
+              {identity.enrolled ? 'enrolled' : 'pending'}
+            </span>
+          </div>
+        )}
+
+        <form onSubmit={handleRegister} className="space-y-4">
+          <Field
+            label="Display Name"
+            fieldKey="lab_name"
+            value={name}
+            onChange={(_, v) => setName(v)}
+            placeholder="e.g. alice"
+            note="Letters, numbers, and hyphens only — becomes the subdomain label."
+          />
+          <Field
+            label="S1 HEC Ingest URL"
+            fieldKey="lab_s1_hec_url"
+            value={s1HecUrl}
+            onChange={(_, v) => setS1HecUrl(v)}
+            placeholder="https://ingest.<region>.sentinelone.net/services/collector/raw?sourcetype=marketplace-cloudflare-latest"
+          />
+          <Field
+            label="S1 HEC Write Token"
+            fieldKey="lab_s1_hec_token"
+            value={s1HecToken}
+            onChange={(_, v) => setS1HecToken(v)}
+            showToggle
+            placeholder="HEC write token from your SentinelOne console"
+            note="Sent only to this backend on submit — never stored in your browser."
+          />
+
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              type="submit"
+              disabled={registering || !name || !s1HecUrl || !s1HecToken}
+              className="btn-orange text-sm disabled:opacity-40"
+            >
+              {registering ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+                  Registering...
+                </span>
+              ) : 'Register'}
+            </button>
+            {loading && <span className="text-xs text-slate-500 font-mono">Checking identity...</span>}
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-1.5 text-sm text-red-400">
+              <XCircle className="w-4 h-4 shrink-0" />
+              {error}
+            </div>
+          )}
+
+          {!error && identity && !registering && (
+            relayConfigured ? (
+              <div className="flex items-center gap-1.5 text-sm text-green-400">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                enrolled with relay ✓
+              </div>
+            ) : (
+              <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 flex gap-2 text-xs text-yellow-400">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                Relay not configured yet — subdomain assigned locally; enrollment will complete once RELAY_URL is set.
+              </div>
+            )
+          )}
+        </form>
+      </div>
+    </Section>
+  )
+}
+
 export default function Settings() {
   const [settings, setSettings] = useState(loadSettings)
   const [testStatus, setTestStatus] = useState(null) // null | 'testing' | 'ok' | 'fail'
@@ -405,6 +563,9 @@ export default function Settings() {
           Tokens are never sent to external servers — only to your local Docker backend when you explicitly run an attack or test connection.
         </p>
       </div>
+
+      {/* Section 0: Lab Identity — multi-tenant relay registration */}
+      <LabIdentitySection serverConfig={serverConfig} />
 
       {/* Section 1: Cloudflare */}
       <Section title="Cloudflare Configuration" icon={Shield} defaultOpen={true}>

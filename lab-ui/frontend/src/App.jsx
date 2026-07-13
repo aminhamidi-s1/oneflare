@@ -6,6 +6,7 @@ import ScenarioDetail from './pages/ScenarioDetail.jsx'
 import ThreatOps from './pages/ThreatOps.jsx'
 import Architecture from './pages/Architecture.jsx'
 import Settings from './pages/Settings.jsx'
+import Admin from './pages/Admin.jsx'
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/threatops" element={<ThreatOps />} />
         <Route path="/architecture" element={<Architecture />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/admin" element={<Admin />} />
         {/* Redirects so old bookmarks don't 404 */}
         <Route path="/detections" element={<Navigate to="/architecture" replace />} />
         <Route path="/parsers" element={<Navigate to="/architecture" replace />} />
