@@ -287,22 +287,22 @@ async function forwardToTenant(env, host, row, records) {
 
   const body = records.join("\n") + "\n";
 
+  // The S1 marketplace HEC raw collector (/services/collector/raw) is
+  // Splunk-HEC-compatible and authenticates with `Authorization: Splunk <token>`.
+  // (Verified live: raw and Bearer both return 401 "Invalid authorization
+  // header, code 3"; Splunk succeeds.) The user supplies the raw token at
+  // /register (the full raw-collector URL incl. ?sourcetype=... goes in
+  // s1_hec_url). If they paste a value that already carries a scheme (has a
+  // space, e.g. "Splunk x" / "Bearer x"), pass it through unchanged.
+  const authHeader = /\s/.test(row.s1_hec_token)
+    ? row.s1_hec_token
+    : `Splunk ${row.s1_hec_token}`;
+
   try {
-    // Mirrors the shared Logpush destination format already in use for
-    // soledrop.co, which is configured as:
-    //   sentinelone://ingest.us1.sentinelone.net/services/collector/raw
-    //     ?header_Authorization=<token>&sourcetype=marketplace-cloudflare-latest
-    // i.e. the S1 HEC "raw" collector expects a plain POST of the raw
-    // newline-delimited records to a URL that already carries `sourcetype` as
-    // a query param, authenticated via a Splunk-style `Authorization: <token>`
-    // header (no "Bearer " prefix). The user supplies `s1_hec_url` (that full
-    // raw-collector URL, including ?sourcetype=...) and `s1_hec_token` at
-    // /register — this relay just forwards records as-received, 1:1 with how
-    // Logpush itself would have POSTed them.
     const resp = await fetch(row.s1_hec_url, {
       method: "POST",
       headers: {
-        "Authorization": row.s1_hec_token,
+        "Authorization": authHeader,
         "Content-Type": "application/json",
       },
       body,
