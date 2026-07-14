@@ -215,17 +215,24 @@ async function handleIngest(request, env, ctx) {
       continue; // skip an unparseable line rather than fail the whole batch
     }
 
-    // `ClientRequestHost` is the Cloudflare Logpush field name (present on
-    // both the http_requests and firewall_events datasets when included in
-    // the job's output_options field list) that carries the request's Host.
-    // Grouping/registry lookup always keys on the ORIGINAL host.
-    const host = record.ClientRequestHost;
+    // The request Host field differs by dataset: http_requests carries it in
+    // `ClientRequestHost`, firewall_events in `ClientRequestHTTPHost`. Support
+    // both so routing works across datasets. Grouping/registry lookup always
+    // keys on the ORIGINAL host.
+    const hostField = record.ClientRequestHost != null
+      ? "ClientRequestHost"
+      : record.ClientRequestHTTPHost != null
+        ? "ClientRequestHTTPHost"
+        : null;
+    if (!hostField) continue;
+    const host = record[hostField];
     if (!host) continue;
 
     // Optional: make the forwarded record look like it came from the canonical
     // shop.soledrop.co host instead of the per-user lab subdomain. Applied to
-    // the record body only; the grouping key stays the original host.
-    if (rewriteHost) record.ClientRequestHost = "shop.soledrop.co";
+    // the record body only (the field that carried the host); the grouping key
+    // stays the original host.
+    if (rewriteHost) record[hostField] = "shop.soledrop.co";
 
     if (!byHost.has(host)) byHost.set(host, []);
     byHost.get(host).push(JSON.stringify(record));

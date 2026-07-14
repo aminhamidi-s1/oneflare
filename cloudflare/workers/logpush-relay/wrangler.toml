@@ -11,7 +11,7 @@ compatibility_date = "2025-06-01"
 # Create with: wrangler kv namespace create REGISTRY
 [[kv_namespaces]]
 binding = "REGISTRY"
-id = "placeholder_registry_kv_id"
+id = "bdbe1493beaa4df4af83a1ed6647df9c"
 
 # ── Secrets (set via `wrangler secret put <NAME>` — never committed) ─────────
 # LAB_ENROLL_CODE — shared enrollment code gating POST /register. Callers must
