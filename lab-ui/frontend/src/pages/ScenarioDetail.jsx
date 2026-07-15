@@ -2,15 +2,17 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, Copy, Check, Play, Square, AlertTriangle,
-  ChevronRight, Shield, Target, Layers, GitBranch, Terminal as TerminalIcon,
+  ChevronRight, ChevronDown, Shield, Target, Layers, GitBranch, Terminal as TerminalIcon,
   Settings as SettingsIcon, Info, ExternalLink, ShieldCheck, CheckCircle2,
-  Radar, Crosshair
+  Radar, Crosshair, Plug, Braces
 } from 'lucide-react'
 import { SCENARIOS } from '../data/scenarios.js'
 import Badge from '../components/Badge.jsx'
 import Terminal from '../components/Terminal.jsx'
 import RunSummary from '../components/RunSummary.jsx'
 import TargetBar from '../components/TargetBar.jsx'
+import HAPlaybookDiagram from '../components/HAPlaybookDiagram.jsx'
+import { HA_PLAYBOOKS, loadHaWorkflowJson } from '../data/haPlaybooks.js'
 import { getMe, getTenants, getRunTarget, dnsAllowed } from '../lib/session.js'
 
 const TABS = [
@@ -74,6 +76,67 @@ function SectionHeader({ icon: Icon, title, accent = 'purple' }) {
     <div className="flex items-center gap-2 mb-3">
       <Icon className={`w-4 h-4 ${color}`} />
       <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">{title}</h3>
+    </div>
+  )
+}
+
+// Raw workflow JSON is lazy-loaded on first expand (dynamic import — its own chunk),
+// rather than bundled into the main app chunk, since most visitors never open it.
+function WorkflowJsonPanel({ workflowKey, filename }) {
+  const [open, setOpen] = useState(false)
+  const [raw, setRaw] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const handleToggle = () => {
+    setOpen(o => !o)
+    if (!raw && !loading) {
+      setLoading(true)
+      loadHaWorkflowJson(workflowKey).then(data => {
+        setRaw(data)
+        setLoading(false)
+      })
+    }
+  }
+
+  const pretty = raw ? JSON.stringify(raw, null, 2) : ''
+
+  return (
+    <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+      <button
+        onClick={handleToggle}
+        className="flex items-center justify-between w-full text-left"
+        aria-expanded={open}
+      >
+        <div className="flex items-center gap-2">
+          <Braces className="w-4 h-4 text-purple-400" />
+          <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">Workflow JSON</h3>
+        </div>
+        {open ? <ChevronDown className="w-4 h-4 text-slate-500" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+      </button>
+      {open && (
+        <div className="mt-4 space-y-3">
+          {loading || !raw ? (
+            <p className="text-xs text-slate-500">Loading workflow JSON&hellip;</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-slate-500 font-mono truncate">{filename}</span>
+                <CopyButton text={pretty} label="Copy JSON" />
+              </div>
+              <pre className="code-block text-xs leading-relaxed overflow-auto" style={{ maxHeight: '28rem' }}>
+                <code className="text-purple-300">{pretty}</code>
+              </pre>
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 flex gap-2.5">
+                <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Import into SentinelOne &rarr; Hyperautomation &rarr; Workflows &rarr; Import (lands as a
+                  Private Draft owned by the importing user — publish it, bind the connections above, then activate).
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -419,6 +482,8 @@ export default function ScenarioDetail() {
     })
   }
 
+  const haPlaybook = HA_PLAYBOOKS[id]
+
   const allScenarios = SCENARIOS
   const currentIndex = allScenarios.findIndex(s => s.id === id)
   const prevScenario = allScenarios[currentIndex - 1]
@@ -588,9 +653,50 @@ export default function ScenarioDetail() {
 
         {/* === RESPONSE PLAYBOOK === */}
         {activeTab === 'playbook' && (
-          <div className="space-y-4">
+          <div className="space-y-5">
+            {haPlaybook && (
+              <>
+                {/* Why this response */}
+                <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+                  <SectionHeader icon={GitBranch} title="Why this response" accent="orange" />
+                  <p className="text-sm text-slate-300 leading-relaxed">{haPlaybook.why}</p>
+                </div>
+
+                {/* Connections required */}
+                <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+                  <SectionHeader icon={Plug} title="Connections required" accent="blue" />
+                  <div className="flex flex-wrap gap-2">
+                    {haPlaybook.connections.map((c, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center rounded-full border border-[#2d1b4e] bg-white/5 px-3 py-1 text-xs font-mono text-slate-300"
+                      >
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                    Configure these under Hyperautomation &rarr; Integrations before importing —
+                    integration-backed actions won't run without a bound connection.
+                  </p>
+                </div>
+
+                {/* Diagram */}
+                <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+                  <SectionHeader icon={GitBranch} title={`Hyperautomation workflow — ${haPlaybook.title}`} />
+                  <HAPlaybookDiagram diagram={haPlaybook.diagram} />
+                </div>
+
+                {/* Workflow JSON (collapsible, lazy-loaded) */}
+                <WorkflowJsonPanel workflowKey={haPlaybook.workflowKey} filename={haPlaybook.workflowFile} />
+              </>
+            )}
+
+            {/* Analyst steps (existing compact list) */}
             <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Incident Response Workflow</h3>
+              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">
+                {haPlaybook ? 'Analyst Steps' : 'Incident Response Workflow'}
+              </h3>
               <div className="space-y-0">
                 {scenario.responseWorkflow.map((item, i) => (
                   <div key={i} className="flex gap-3">
