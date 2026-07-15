@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, Copy, Check, Play, Square, AlertTriangle,
   ChevronRight, ChevronDown, Shield, Target, Layers, GitBranch, Terminal as TerminalIcon,
@@ -7,6 +7,7 @@ import {
   Radar, Crosshair, Plug, Braces
 } from 'lucide-react'
 import { SCENARIOS } from '../data/scenarios.js'
+import { detectionForScenario } from '../data/knowledgeObjects.js'
 import Badge from '../components/Badge.jsx'
 import Terminal from '../components/Terminal.jsx'
 import RunSummary from '../components/RunSummary.jsx'
@@ -142,15 +143,24 @@ function WorkflowJsonPanel({ workflowKey, filename }) {
 }
 
 // Rich, detection-engineer-focused SIEM view (used when a scenario defines `siem`).
-function RichSiemDetection({ scenario }) {
+// Rule identity (name / severity / query) is sourced from the canonical
+// knowledgeObjects.DETECTIONS entry — the ACTUAL deployed rule JSON — so what a
+// user sees here matches exactly what the Architecture page shows and what
+// deploys. All narrative fields (why-detect, MITRE, signals, tuning, triage)
+// still come from the scenario's own `siem` content. Falls back to the
+// scenario's local siem.* facts if no canonical detection is registered.
+function RichSiemDetection({ scenario, detection }) {
   const s = scenario.siem
+  const ruleName = detection?.name ?? s.ruleName
+  const severity = detection?.severity ?? s.severity
+  const query = detection?.query ?? s.query
   return (
     <div className="space-y-5">
       {/* Meta row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <MetaCard label="Detection Rule" value={s.ruleName} mono />
+        <MetaCard label="Detection Rule" value={ruleName} mono />
         <MetaCard label="Rule Type" value={`${s.ruleType} · ${s.queryLang}`} />
-        <MetaCard label="Severity" value={<Badge type="severity" value={s.severity} />} />
+        <MetaCard label="Severity" value={<Badge type="severity" value={severity} />} />
         <MetaCard label="Data Source" value={s.dataSource} />
       </div>
 
@@ -206,10 +216,10 @@ function RichSiemDetection({ scenario }) {
       <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
         <div className="flex items-center justify-between mb-3">
           <SectionHeader icon={TerminalIcon} title="PowerQuery Detection" />
-          <CopyButton text={s.query} label="Copy Query" />
+          <CopyButton text={query} label="Copy Query" />
         </div>
         <pre className="code-block text-xs leading-relaxed overflow-x-auto">
-          <code className="text-purple-300">{s.query}</code>
+          <code className="text-purple-300">{query}</code>
         </pre>
         <p className="text-xs text-slate-500 mt-2 leading-relaxed">
           Scheduled-rule body for the SentinelOne SDL. Runs on a cadence over the lookback window and
@@ -308,8 +318,17 @@ function RichSiemDetection({ scenario }) {
 export default function ScenarioDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const scenario = SCENARIOS.find(s => s.id === id)
-  const [activeTab, setActiveTab] = useState('overview')
+  // Canonical detection identity for this scenario (name/severity/query as
+  // ACTUALLY deployed) — see src/data/knowledgeObjects.js.
+  const detection = detectionForScenario(id)
+  // Deep-links (e.g. from the Architecture Hyperautomation index) can land
+  // directly on a tab via ?tab=playbook.
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState(
+    TABS.some(t => t.id === requestedTab) ? requestedTab : 'overview'
+  )
 
   // Run state
   const [lines, setLines] = useState([])
@@ -619,22 +638,22 @@ export default function ScenarioDetail() {
         {/* === SIEM DETECTION === */}
         {activeTab === 'siem' && (
           scenario.siem ? (
-            <RichSiemDetection scenario={scenario} />
+            <RichSiemDetection scenario={scenario} detection={detection} />
           ) : (
           <div className="space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <MetaCard label="Detection Rule" value={scenario.detectionRule} mono />
-              <MetaCard label="SIEM Severity" value={<Badge type="severity" value={scenario.siemSeverity} />} />
+              <MetaCard label="Detection Rule" value={detection?.name ?? scenario.detectionRule} mono />
+              <MetaCard label="SIEM Severity" value={<Badge type="severity" value={detection?.severity ?? scenario.siemSeverity} />} />
               <MetaCard label="MITRE Tactic" value={scenario.siemTactic} />
             </div>
 
             <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">STAR Detection Rule</h3>
-                <CopyButton text={scenario.siemLogic} label="Copy Rule" />
+                <CopyButton text={detection?.query ?? scenario.siemLogic} label="Copy Rule" />
               </div>
               <pre className="code-block text-xs leading-relaxed whitespace-pre-wrap">
-                <code className="text-purple-300">{scenario.siemLogic}</code>
+                <code className="text-purple-300">{detection?.query ?? scenario.siemLogic}</code>
               </pre>
             </div>
 
