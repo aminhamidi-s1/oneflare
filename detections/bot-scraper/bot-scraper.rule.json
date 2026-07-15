@@ -1,0 +1,37 @@
+{
+  "data": {
+    "name": "CF-Bot-Scraper — Low-BotScore Automated Scraping against NovaMind",
+    "description": "Detects automated / scraper traffic against NovaMind web properties (class_uid 4002, 'HTTP Requests') using Cloudflare's ML BotScore. Cloudflare emits BotScore as a 1–99 string where LOWER = more bot-like; a score <= 29 marks traffic Cloudflare's model considers likely automated. Casts unmapped.BotScore with number(), scopes to the lab surface (hostname contains 'soledrop.co', which covers shop.soledrop.co and any per-user *.lab.soledrop.co subdomain), groups by src_ip and fires when a single source produces >= 20 likely-bot requests in the window. Surfaces min/avg BotScore, distinct_paths (breadth of crawl) and a sample User-Agent as context. Low false-positive because a human browser does not emit 20+ requests scored <= 29 from one IP; validated hits carried unambiguous automation UAs (Wrath-AIO, libwww-perl, PhantomJS, Go-http-client). NOTE: the JA4 TLS-fingerprint variant of this detection is dead — unmapped.JA4 / ClientRequestJA4 / JA4Signals / BotTags return 0 records in this tenant — so BotScore is the working signal. MITRE ATT&CK T1595 (Active Scanning), T1071 (Application Layer Protocol); MITRE ATLAS AML.T0002 (data reconnaissance via scraping). Covers OneFlare scenario 'bot'.",
+    "queryType": "scheduled",
+    "queryLang": "2.0",
+    "severity": "Medium",
+    "status": "Active",
+    "expirationMode": "Permanent",
+    "treatAsThreat": "UNDEFINED",
+    "networkQuarantine": false,
+    "s1ql": "",
+    "scheduledParams": {
+      "query": "class_uid=4002 dataSource.name='Cloudflare'\n| let src_ip = src_endpoint.ip\n| let bscore = number(unmapped.BotScore)\n| filter http_request.url.hostname contains:anycase(\"soledrop.co\") AND bscore <= 29\n| group\n    bot_requests   = count(),\n    min_botscore   = min(bscore),\n    avg_botscore   = avg(bscore),\n    distinct_paths = estimate_distinct(http_request.url.path),\n    sample_ua      = any(http_request.user_agent),\n    host           = any(http_request.url.hostname),\n    country        = any(src_endpoint.location.country),\n    first_seen     = oldest(timestamp),\n    last_seen      = newest(timestamp)\n  by src_ip\n| filter bot_requests >= 20\n| let detection_time = simpledateformat(last_seen, 'yyyy-MM-dd HH:mm:ss z', 'America/Chicago')\n| sort -bot_requests\n| columns detection_time, src_ip, host, bot_requests, min_botscore, avg_botscore, distinct_paths, sample_ua, country, first_seen\n| limit 100",
+      "runIntervalMinutes": 1,
+      "lookbackWindowMinutes": 15,
+      "threshold": {
+        "value": 0,
+        "operator": "Greater"
+      },
+      "alertPerRow": true
+    },
+    "_entityMappings_pending_feature": [
+      {
+        "columnName": "src_ip"
+      },
+      {
+        "columnName": "host"
+      }
+    ]
+  },
+  "filter": {
+    "siteIds": [
+      "2433185103040607397"
+    ]
+  }
+}

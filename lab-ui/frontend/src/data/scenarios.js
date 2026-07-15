@@ -574,13 +574,13 @@ THRESHOLD: >=20 requests from same ClientIP against api.* paths`,
       { step: 4, action: "Notify SOC", detail: "Report the source IP, UA list, min BotScore, and probed endpoints" }
     ],
     siem: {
-      ruleName: "CF-BotMgmt-LowBotScoreScraper",
+      ruleName: "CF-Bot-Scraper — Low-BotScore Automated Scraping against NovaMind",
       ruleType: "Scheduled detection",
       queryLang: "PowerQuery 2.0 · SentinelOne SDL",
       dataSource: "Cloudflare zone HTTP Requests + Bot Management → OCSF HTTP Activity (class_uid 4002)",
-      severity: "High",
-      validated: false,
-      validationNote: "BotScore-based — JA4 not emitted in this Cloudflare tenant. Live-verified over a 14-day window: unmapped.JA4, unmapped.ClientRequestJA4, unmapped.JA4Signals, and unmapped.BotTags all returned 0 records (Bot Management's TLS-fingerprint fields are not on this account's log stream), but unmapped.BotScore DOES populate (19,581 of 573,594 Cloudflare HTTP Requests records). The rule below is rewritten against BotScore volume clustering per source and is pending a live-fire validation pass against this scenario's attack script.",
+      severity: "Medium",
+      validated: true,
+      validationNote: "Live-validated against real Cloudflare HTTP Requests (LRQ, 14-day window) — deployed rule id 2523842940840264774, scheduled 1-min run / 15-min lookback. The JA4 variant is dead in this tenant: unmapped.JA4, unmapped.ClientRequestJA4, unmapped.JA4Signals and unmapped.BotTags all returned 0 records, so the rule uses Cloudflare's ML BotScore (populated on 19,581 of 573,594 records). The deployed query returned 6 firing sources on shop.soledrop.co, each with ≥20 requests scored ≤29 and unambiguous automation User-Agents — 104.28.153.23 (401 hits, avg score 12, UA Wrath-AIO/3.2), 104.28.153.9 (303 hits, avg 4.4, libwww-perl/6.76), 173.63.178.49 (109 hits, PhantomJS/2.1.1), 45.94.31.73 (77 hits, Go-http-client-style), 81.171.72.135 (34 hits, Go-http-client/1.1) and 157.143.3.35 (25 hits). Zero human-browser sources cleared the ≥20 low-score gate. Host scope is 'soledrop.co' (covers shop.soledrop.co today and any per-user *.lab.soledrop.co subdomain once the multi-tenant relay is live).",
       importance: "Polymorphic bots defeat User-Agent-based blocking by rotating identities every request. TLS fingerprinting (JA3/JA4) would be the durable identifier since a client's TLS stack can't be faked per-request — but JA4 isn't available in this tenant. Cloudflare's Bot Management ML score (BotScore) is the fallback signal: it scores the underlying client behavior, not the claimed UA, so a scraper rotating User-Agents still scores consistently low.",
       whyDetect: [
         "BotScore is Cloudflare's own ML verdict on the request, independent of the User-Agent header the client claims.",
@@ -588,32 +588,32 @@ THRESHOLD: >=20 requests from same ClientIP against api.* paths`,
         "Clustering low-BotScore requests per source IP separates a sustained automated client from a one-off borderline score.",
         "Catches AI/agent-framework scrapers (LangChain/AutoGen/CrewAI UAs) hunting training data and model weights.",
       ],
-      query: `class_uid=4002 dataSource.cloudflare_dataset='HTTP Requests' unmapped.BotScore=*
-| let bot     = number(unmapped.BotScore)
-| let ua      = http_request.user_agent
-| let src_ip  = src_endpoint.ip
-| let host    = http_request.url.hostname
-| filter bot <= 29
+      query: `class_uid=4002 dataSource.name='Cloudflare'
+| let src_ip = src_endpoint.ip
+| let bscore = number(unmapped.BotScore)
+| filter http_request.url.hostname contains:anycase("soledrop.co") AND bscore <= 29
 | group
-    hits         = count(),
-    min_score    = min(bot),
-    distinct_ua  = estimate_distinct(ua),
-    paths        = estimate_distinct(http_request.url.path),
-    ua_sample    = array_agg_distinct(ua),
-    first_seen   = oldest(timestamp),
-    last_seen    = newest(timestamp)
-  by src_ip, host
-| filter hits >= 20
+    bot_requests   = count(),
+    min_botscore   = min(bscore),
+    avg_botscore   = avg(bscore),
+    distinct_paths = estimate_distinct(http_request.url.path),
+    sample_ua      = any(http_request.user_agent),
+    host           = any(http_request.url.hostname),
+    country        = any(src_endpoint.location.country),
+    first_seen     = oldest(timestamp),
+    last_seen      = newest(timestamp)
+  by src_ip
+| filter bot_requests >= 20
 | let detection_time = simpledateformat(last_seen, 'yyyy-MM-dd HH:mm:ss z', 'America/Chicago')
-| sort -hits
-| columns detection_time, src_ip, host, hits, min_score, distinct_ua, paths, ua_sample, first_seen
+| sort -bot_requests
+| columns detection_time, src_ip, host, bot_requests, min_botscore, avg_botscore, distinct_paths, sample_ua, country, first_seen
 | limit 100`,
       queryExplained: [
-        { code: "unmapped.BotScore=* (initial filter)", note: "Require a Bot Management score present. It lives under unmapped.* — the parser does not promote it to a top-level OCSF field in this tenant." },
-        { code: "number(unmapped.BotScore)", note: "BotScore is 1–99, STRING-typed in the SDL — cast with number() before comparison." },
-        { code: "filter bot <= 29", note: "Cloudflare's own threshold for 'likely automated' traffic; lower = more bot-like." },
-        { code: "group by src_ip, host", note: "Aggregate low-score traffic per source — a scraper making a sustained run, not a single borderline request." },
-        { code: "filter hits >= 20", note: "Require a cluster of low-score requests so one noisy-but-legitimate hit can't alert." },
+        { code: "class_uid=4002 dataSource.name='Cloudflare'", note: "Cloudflare HTTP Requests, OCSF HTTP Activity class. dataSource.name='Cloudflare' is the verified live filter in this tenant." },
+        { code: "number(unmapped.BotScore)", note: "BotScore lives under unmapped.* (the parser does not promote it) and is a 1–99 STRING — cast with number() before comparison." },
+        { code: "filter ... AND bscore <= 29", note: "Cloudflare's own threshold for 'likely automated' traffic; LOWER = more bot-like. Host scope 'soledrop.co' covers shop.soledrop.co + future *.lab.soledrop.co." },
+        { code: "group by src_ip", note: "Aggregate low-score traffic per source — a scraper making a sustained run, not a single borderline request." },
+        { code: "filter bot_requests >= 20", note: "Require a cluster of low-score requests so one noisy-but-legitimate hit can't alert. Validated: 6 sources cleared this gate, all with automation UAs." },
       ],
       signals: [
         { signal: "BotScore ≤ 29", catches: "Automated client", why: "Cloudflare's ML flags the request as bot-like regardless of the User-Agent it presents." },
@@ -626,7 +626,7 @@ THRESHOLD: >=20 requests from same ClientIP against api.* paths`,
         { id: "AML.T0002", tactic: "ATLAS Reconnaissance", name: "Acquire Public AI Artifacts / Model Recon", url: "https://atlas.mitre.org/techniques/AML.T0002" },
       ],
       falsePositive: {
-        finding: "Not yet re-validated against this scenario's attack script under the new query. Anticipated FP class: a legitimate high-volume integration or health-check client that Cloudflare's ML happens to score low, or a shared corporate egress IP with mixed legitimate automation (uptime monitors, RSS readers).",
+        finding: "0 false positives in the 14-day validation run — all 6 firing sources carried unambiguous automation User-Agents (Wrath-AIO, libwww-perl, PhantomJS, Go-http-client). Residual FP class to watch: a legitimate high-volume integration or health-check client that Cloudflare's ML happens to score low, or a shared corporate egress IP with mixed legitimate automation (uptime monitors, RSS readers).",
         rootCause: "BotScore is probabilistic ML, not a hard signature — some legitimate automated clients (monitoring, SDKs) score in the bot-like range.",
         fix: "The hits ≥ 20 cluster gate absorbs isolated low scores; allow-list known monitoring/SDK source IPs and raise the threshold for hosts that legitimately serve API clients.",
       },
