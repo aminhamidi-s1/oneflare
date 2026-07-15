@@ -104,8 +104,8 @@ function LoginForm({ onLoggedIn }) {
         <Lock className="w-6 h-6 text-orange-400" />
       </div>
       <div className="text-center">
-        <p className="text-slate-100 font-semibold">Admin sign in</p>
-        <p className="text-sm text-slate-500 mt-1">Relay administration is restricted to invited admins.</p>
+        <p className="text-slate-100 font-semibold">Sign in</p>
+        <p className="text-sm text-slate-500 mt-1">Sign in to your OneFlare lab account.</p>
       </div>
       <form onSubmit={handleSubmit} className="w-full space-y-3">
         <div>
