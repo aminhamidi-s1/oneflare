@@ -53,11 +53,19 @@ const VALIDATION_PING = '{"content":"tests"}';
 const ADMIN_USER_PREFIX = "__admin_user__:";
 const INVITE_PREFIX = "__invite__:";
 const SESSION_PREFIX = "__session__:";
+// owner_email -> host index, so "which tenant does this user own?" is an O(1)
+// point get (strongly read-after-write) rather than a list() scan (which lags a
+// fresh write by up to ~60s). Also __-prefixed → excluded from listRegistryRows.
+const OWNER_PREFIX = "__owner__:";
 const PBKDF2_ITERATIONS = 100000;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 const SESSION_COOKIE = "oneflare_admin_session";
 const ADMIN_CONSOLE_ORIGIN = "https://one-flare.com";
+// RBAC roles: admin = manage everyone + run against any subdomain; viewer =
+// read-only admin views; user = self-service tenant (owns & runs only their own
+// lab). See RBAC.md.
+const ROLES = ["admin", "viewer", "user"];
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -606,22 +614,14 @@ async function forwardToTenant(env, host, row, records) {
   }
 }
 
-// ── POST /register ─────────────────────────────────────────────────────────
-
-async function handleRegister(request, env) {
-  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "invalid JSON body" }, 400);
-  }
-
-  if (!checkEnrollCode(request, body, env)) {
-    return json({ error: "invalid or missing enroll code" }, 403);
-  }
-
+// ── Tenant upsert (shared by /register and /auth/lab/register) ───────────────
+//
+// Validates the registration body and builds/updates the tenant row.
+// `ownerEmail`: a string stamps the row's owner_email; `undefined` leaves any
+// existing owner untouched (and defaults to null on create) — this lets the
+// anonymous enroll-code path coexist with the session-gated owned path.
+// Returns { error: Response } on invalid input, else { host, row, existed }.
+async function buildTenantUpsert(env, body, ownerEmail) {
   const { name, s1_hec_url, s1_hec_token, site_label, account_label, s1_console_url } = body || {};
   // site_label (the S1 site) and account_label (the S1 account) are REQUIRED so
   // the admin console can always name the real destination behind the opaque HEC
@@ -631,14 +631,14 @@ async function handleRegister(request, env) {
   const account = String(account_label || "").trim().slice(0, 200);
   const consoleUrl = String(s1_console_url || "").trim().slice(0, 300) || null;
   if (!name || !s1_hec_url || !s1_hec_token || !label || !account) {
-    return json({
+    return { error: json({
       error: "name, s1_hec_url, s1_hec_token, site_label, and account_label are all required",
-    }, 400);
+    }, 400) };
   }
 
   const slug = slugify(name);
   if (!slug) {
-    return json({ error: "name did not produce a valid subdomain slug" }, 400);
+    return { error: json({ error: "name did not produce a valid subdomain slug" }, 400) };
   }
 
   const host = `${slug}.${LAB_DOMAIN}`;
@@ -656,6 +656,7 @@ async function handleRegister(request, env) {
     row.site_label = label;
     row.account_label = account;
     row.s1_console_url = consoleUrl;
+    if (ownerEmail !== undefined) row.owner_email = ownerEmail;
   } else {
     row = {
       name,
@@ -665,15 +666,58 @@ async function handleRegister(request, env) {
       site_label: label,
       account_label: account,
       s1_console_url: consoleUrl,
+      owner_email: ownerEmail === undefined ? null : ownerEmail,
       status: "active",
       created_at: now,
       forwarded: 0,
       last_seen: null,
     };
   }
+  return { host, row, existed: !!existingRaw };
+}
+
+// The tenant row owned by `email`, or null — via the owner→host index (point
+// get, so it reflects a just-written registration immediately). Self-heals a
+// stale index whose host row was torn down.
+async function findTenantByOwner(env, email) {
+  const key = OWNER_PREFIX + normEmail(email);
+  const host = await env.REGISTRY.get(key);
+  if (!host) return null;
+  const raw = await env.REGISTRY.get(host);
+  if (!raw) {
+    await env.REGISTRY.delete(key);
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// ── POST /register — anonymous, enroll-code-gated (partner/local instances) ──
+
+async function handleRegister(request, env) {
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+
+  if (!checkEnrollCode(request, body, env)) {
+    return json({ error: "invalid or missing enroll code" }, 403);
+  }
+
+  // undefined owner → don't disturb an owner set via the session path.
+  const built = await buildTenantUpsert(env, body, undefined);
+  if (built.error) return built.error;
+  const { host, row, existed } = built;
 
   await env.REGISTRY.put(host, JSON.stringify(row));
-  await appendHistory(env, { type: existingRaw ? "re-register" : "register", subdomain: host, name });
+  await appendHistory(env, { type: existed ? "re-register" : "register", subdomain: host, name: row.name });
 
   return json({ ok: true, subdomain: host, shop_url: `https://${host}` });
 }
@@ -750,6 +794,11 @@ async function handleAdminDeleteUser(request, env, rawSubdomain) {
   // so removing the row is sufficient to stop this tenant's traffic from being
   // forwarded (it will fall into the unknown-host bucket and be dropped).
   await env.REGISTRY.delete(host);
+  // Clear the owner→host index too so the owner can cleanly re-register.
+  try {
+    const owner = JSON.parse(raw).owner_email;
+    if (owner) await env.REGISTRY.delete(OWNER_PREFIX + normEmail(owner));
+  } catch {}
   await appendHistory(env, { type: "teardown", subdomain: host });
 
   return json({ ok: true, subdomain: host, deleted: true });
@@ -805,8 +854,8 @@ async function handleAuthInvite(request, env) {
     return json({ error: "invalid JSON body" }, 400);
   }
   const email = normEmail(body && body.email);
-  const role = body && (body.role === "admin" || body.role === "viewer") ? body.role : null;
-  if (!email || !role) return json({ error: "email and role ('admin'|'viewer') are required" }, 400);
+  const role = body && ROLES.includes(body.role) ? body.role : null;
+  if (!email || !role) return json({ error: "email and role ('admin'|'viewer'|'user') are required" }, 400);
 
   if (await getAdminUser(env, email)) return json({ error: "user already exists" }, 409);
 
@@ -908,8 +957,8 @@ async function handleAuthUserRole(request, env, rawEmail) {
   } catch {
     return json({ error: "invalid JSON body" }, 400);
   }
-  const role = body && (body.role === "admin" || body.role === "viewer") ? body.role : null;
-  if (!role) return json({ error: "role must be 'admin' or 'viewer'" }, 400);
+  const role = body && ROLES.includes(body.role) ? body.role : null;
+  if (!role) return json({ error: "role must be 'admin', 'viewer', or 'user'" }, 400);
 
   const email = normEmail(decodeURIComponent(rawEmail || ""));
   const user = await getAdminUser(env, email);
@@ -972,6 +1021,81 @@ async function handleAuthBootstrap(request, env) {
   return json({ ok: true, invite_url, email, role: "admin", expires_at: row.expires_at });
 }
 
+// ── /auth/lab/* — session-gated, self-service tenant (the caller's OWN lab) ──
+//
+// Unlike /register (anonymous, enroll-code — used by partner/local instances),
+// these tie a tenant to the logged-in user via owner_email resolved from the
+// session. Any valid session may use them EXCEPT viewer (read-only). This is how
+// the multi-user console links a user to their subdomain + S1 destination.
+
+// Strip the opaque HEC token before returning a tenant to its owner (the relay
+// is the system of record; the token is re-entered on change, never echoed).
+function ownerIdentityView(row) {
+  if (!row) return null;
+  const { s1_hec_token, ...rest } = row;
+  return rest;
+}
+
+async function handleAuthLabRegister(request, env) {
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+  const session = await currentSession(request, env);
+  if (!session) return json({ error: "not authenticated" }, 401);
+  if (session.role === "viewer") return json({ error: "viewers cannot register a lab" }, 403);
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+
+  const built = await buildTenantUpsert(env, body, session.email);
+  if (built.error) return built.error;
+  const { host, row, existed } = built;
+
+  const ownerKey = OWNER_PREFIX + normEmail(session.email);
+  // One subdomain per user: if the caller already owns a DIFFERENT host, this is
+  // a rename — delete the old row so they don't accumulate orphaned subdomains.
+  const prevHost = await env.REGISTRY.get(ownerKey);
+  if (prevHost && prevHost !== host) {
+    await env.REGISTRY.delete(prevHost);
+    await appendHistory(env, { type: "lab_rename", from: prevHost, to: host, owner: session.email });
+  }
+
+  await env.REGISTRY.put(host, JSON.stringify(row));
+  await env.REGISTRY.put(ownerKey, host);
+  await appendHistory(env, {
+    type: existed ? "re-register" : "register", subdomain: host, name: row.name, owner: session.email,
+  });
+
+  return json({ ok: true, subdomain: host, shop_url: `https://${host}`, identity: ownerIdentityView(row) });
+}
+
+async function handleAuthLabIdentity(request, env) {
+  const session = await currentSession(request, env);
+  if (!session) return json({ error: "not authenticated" }, 401);
+  const row = await findTenantByOwner(env, session.email);
+  return json({ ok: true, identity: ownerIdentityView(row), lab_domain: LAB_DOMAIN });
+}
+
+// Admin-only: all registered tenants (for the Scenarios-page subdomain selector).
+async function handleAuthTenants(request, env) {
+  const gate = await requireAuthGate(request, env);
+  if (gate.error) return gate.error;
+  const rows = await listRegistryRows(env);
+  const tenants = rows
+    .map((r) => ({
+      subdomain: r.subdomain,
+      name: r.name,
+      owner_email: r.owner_email || null,
+      site_label: r.site_label || null,
+      account_label: r.account_label || null,
+      status: r.status || null,
+    }))
+    .sort((a, b) => String(a.subdomain).localeCompare(String(b.subdomain)));
+  return json({ ok: true, count: tenants.length, tenants });
+}
+
 // ── Router ─────────────────────────────────────────────────────────────────
 
 export default {
@@ -1006,6 +1130,11 @@ export default {
     if (path === "/auth/accept-invite" && request.method === "POST") return handleAuthAcceptInvite(request, env);
     if (path === "/auth/users" && request.method === "GET") return handleAuthUsers(request, env);
     if (path === "/auth/bootstrap" && request.method === "POST") return handleAuthBootstrap(request, env);
+
+    // Session-gated self-service tenant (the caller's own lab) + admin tenant list.
+    if (path === "/auth/lab/register" && request.method === "POST") return handleAuthLabRegister(request, env);
+    if (path === "/auth/lab/identity" && request.method === "GET") return handleAuthLabIdentity(request, env);
+    if (path === "/auth/tenants" && request.method === "GET") return handleAuthTenants(request, env);
 
     const userRoleMatch = path.match(/^\/auth\/users\/([^/]+)\/role$/);
     if (userRoleMatch && request.method === "POST") return handleAuthUserRole(request, env, userRoleMatch[1]);

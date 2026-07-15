@@ -157,9 +157,31 @@ def _reset_target_urls() -> None:
     SERVER_CONFIG["api_url"] = _DEFAULT_TARGET_URLS["api_url"]
 
 
-_BOOT_IDENTITY = _li.bootstrap()
-if _BOOT_IDENTITY and _BOOT_IDENTITY.get("shop_url"):
-    _reflect_identity_urls(_BOOT_IDENTITY["shop_url"])
+def _multi_user_mode() -> bool:
+    """True on the shared console (many users, one backend). The console sets
+    ADMIN_TOKEN; partner/local single-tenant instances do not. An explicit
+    MULTI_USER env overrides for testing.
+
+    In this mode the backend must NEVER mutate process-global target state
+    (os.environ *_URL_OVERRIDE / SERVER_CONFIG) — that is single-tenant coupling
+    that would make the last-registered subdomain everyone's attack target.
+    Identity/target is resolved per request from the caller's session instead.
+    """
+    override = os.getenv("MULTI_USER")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+    return _li.admin_enabled()
+
+
+# In single-tenant mode, re-pin this instance to its persisted subdomain at boot
+# (and reflect it into the subprocess scenario default). In multi-user (console)
+# mode we deliberately skip this — a global identity would clobber every user's
+# target; targeting is resolved per-request instead (see Phase 2).
+_BOOT_IDENTITY = None
+if not _multi_user_mode():
+    _BOOT_IDENTITY = _li.bootstrap()
+    if _BOOT_IDENTITY and _BOOT_IDENTITY.get("shop_url"):
+        _reflect_identity_urls(_BOOT_IDENTITY["shop_url"])
 
 
 @app.get("/api/health")
@@ -370,14 +392,29 @@ async def campaign_clear_incident():
 # Multi-tenant lab identity (feat/multi-tenant-relay)
 # ---------------------------------------------------------------------------
 @app.get("/api/lab/identity")
-def lab_get_identity():
-    """Current lab identity for this instance (or null if unregistered).
+def lab_get_identity(request: Request):
+    """Current lab identity.
 
-    If a local identity exists but the relay no longer has it registered
-    (the admin tore it down from /admin/user/{subdomain}), reset this
-    instance back to an unregistered state and tell the caller so the UI can
-    surface it — sync def → the blocking relay check runs in a threadpool.
+    Multi-user (console) mode: the CALLER's own tenant, resolved from their
+    session via the relay (null if not logged in or not yet registered).
+    Single-tenant mode: this instance's persisted identity, with the relay
+    teardown self-check — sync def → the blocking relay call runs in a threadpool.
     """
+    relay_configured = bool(os.getenv("RELAY_URL"))
+    lab_domain = os.getenv("LAB_DOMAIN", "lab.soledrop.co")
+
+    if _multi_user_mode():
+        status, data, _ = _li.auth_request(
+            "GET", "/auth/lab/identity", cookies=dict(request.cookies)
+        )
+        ident = data.get("identity") if (status == 200 and isinstance(data, dict)) else None
+        return {
+            "identity": ident,
+            "relay_configured": relay_configured,
+            "lab_domain": lab_domain,
+            "multi_user": True,
+        }
+
     ident = _li.load_identity()
     if ident and ident.get("subdomain"):
         still_registered = _li.check_still_registered(ident["subdomain"])
@@ -388,24 +425,49 @@ def lab_get_identity():
                 "identity": None,
                 "reset": True,
                 "message": "This instance was reset by the admin — please register again.",
-                "relay_configured": bool(os.getenv("RELAY_URL")),
-                "lab_domain": os.getenv("LAB_DOMAIN", "lab.soledrop.co"),
+                "relay_configured": relay_configured,
+                "lab_domain": lab_domain,
             }
     return {
         "identity": ident,
-        "relay_configured": bool(os.getenv("RELAY_URL")),
-        "lab_domain": os.getenv("LAB_DOMAIN", "lab.soledrop.co"),
+        "relay_configured": relay_configured,
+        "lab_domain": lab_domain,
     }
 
 
 @app.post("/api/lab/register")
-def lab_register(body: LabRegisterRequest):
-    """Register this instance's lab identity and enroll it with the relay.
+def lab_register(request: Request, body: LabRegisterRequest):
+    """Register a lab identity and enroll it with the relay.
 
-    Sets SHOP_URL_OVERRIDE so all shop-targeted attacks (incl. the CTF) hit this
-    instance's own subdomain. Sync def → FastAPI runs the blocking relay call in
-    a threadpool. 400 = bad input, 502 = relay unreachable/rejected.
+    Multi-user (console) mode: session-gated — proxies the caller's cookie to the
+    relay's /auth/lab/register, which stamps owner_email from the session (401 if
+    not logged in). Does NOT mutate process-global target state. Single-tenant
+    mode: legacy enroll-code registration that pins this instance's global target.
     """
+    if _multi_user_mode():
+        status, data, _ = _li.auth_request(
+            "POST", "/auth/lab/register",
+            cookies=dict(request.cookies), json_body=body.dict(),
+        )
+        if status >= 400 or not isinstance(data, dict):
+            msg = (data.get("error") if isinstance(data, dict) else None) or f"relay error (HTTP {status})"
+            raise HTTPException(status_code=status if 400 <= status < 600 else 502, detail=msg)
+        subdomain = data.get("subdomain")
+        # Reconstruct the identity for the UI from the submitted fields + the
+        # relay-assigned subdomain (the relay never echoes the HEC token back).
+        identity = {
+            "name": body.name,
+            "subdomain": subdomain,
+            "shop_url": data.get("shop_url") or (f"https://{subdomain}" if subdomain else None),
+            "enrolled": True,
+            "s1_hec_url": body.s1_hec_url,
+            "site_label": body.site_label,
+            "account_label": body.account_label,
+            "s1_console_url": body.s1_console_url,
+        }
+        return {"ok": True, "identity": identity}
+
+    # Single-tenant: legacy enroll-code path that pins the process-global target.
     try:
         ident = _li.register(
             body.name, body.s1_hec_url, body.s1_hec_token,
