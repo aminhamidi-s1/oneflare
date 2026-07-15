@@ -67,6 +67,16 @@ const ADMIN_CONSOLE_ORIGIN = "https://one-flare.com";
 // lab). See RBAC.md.
 const ROLES = ["admin", "viewer", "user"];
 
+// Onboarding side-effects on invite (both best-effort, feature-flagged on secrets):
+//   RESEND_API_KEY   → email the invite link (from LAB_INVITE_FROM).
+//   CF_ACCESS_TOKEN  → append the invitee's email to the Cloudflare Access policy
+//                      so they can reach one-flare.com (skips domain-covered ones).
+// The Access app/policy the console lives behind (non-secret ids).
+const CF_API_BASE = "https://api.cloudflare.com/client/v4";
+const CF_ACCOUNT_ID = "b8e637d5097fff0c694c3290ba81563e";
+const ACCESS_APP_ID = "0f47bf98-a5a6-4c4a-87a1-395bb9362ef8";
+const ACCESS_POLICY_ID = "924daf05-16bc-43fb-9f51-aca3e271f699";
+
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
 function json(data, status = 200) {
@@ -842,6 +852,99 @@ async function handleAuthMe(request, env) {
   return json({ email: session.email, role: session.role });
 }
 
+// ── Invite onboarding side-effects (best-effort) ────────────────────────────
+
+function inviteEmailHtml(invite_url, role) {
+  return (
+    `<p>You've been invited to the <strong>OneFlare ThreatOps lab</strong> as <strong>${role}</strong>.</p>` +
+    `<ol>` +
+    `<li><a href="${invite_url}">Accept your invite</a> to set a password.</li>` +
+    `<li>Sign in at <a href="${ADMIN_CONSOLE_ORIGIN}/admin">one-flare.com/admin</a>.</li>` +
+    `<li>In <strong>Settings → Lab Identity</strong>, register your subdomain + SentinelOne HEC ` +
+    `destination, then run scenarios — your telemetry flows only to your own SentinelOne site.</li>` +
+    `</ol>` +
+    `<p style="color:#888">This link expires in 7 days.</p>`
+  );
+}
+
+// Send one invite email via Resend (no-op without RESEND_API_KEY). Returns true if sent.
+async function sendInviteEmail(env, email, invite_url, role) {
+  if (!env.RESEND_API_KEY) return false;
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.LAB_INVITE_FROM || "OneFlare Lab <onboarding@one-flare.com>",
+        to: [email],
+        subject: "You're invited to the OneFlare ThreatOps lab",
+        html: inviteEmailHtml(invite_url, role),
+      }),
+    });
+    if (!res.ok) console.error("Resend invite email non-2xx:", res.status, (await res.text()).slice(0, 200));
+    return res.ok;
+  } catch (err) {
+    console.error("Resend invite email failed:", err && err.message);
+    return false;
+  }
+}
+
+// Append invited emails to the Access allow-list (no-op without CF_ACCESS_TOKEN).
+// Skips addresses already covered by an allowed email_domain (e.g. @sentinelone.com)
+// or already present. One batched PUT for all new emails.
+async function addToAccessAllowlist(env, emails) {
+  const token = env.CF_ACCESS_TOKEN;
+  const list = [...new Set((emails || []).map(normEmail).filter(Boolean))];
+  if (!token || !list.length) return;
+  const url = `${CF_API_BASE}/accounts/${CF_ACCOUNT_ID}/access/apps/${ACCESS_APP_ID}/policies/${ACCESS_POLICY_ID}`;
+  try {
+    const getRes = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+    const pol = (await getRes.json()).result;
+    if (!pol) return;
+    const include = pol.include || [];
+    const allowedDomains = new Set(
+      include.filter((i) => i.email_domain).map((i) => String(i.email_domain.domain).toLowerCase())
+    );
+    const existing = new Set(
+      include.filter((i) => i.email).map((i) => normEmail(i.email.email))
+    );
+    let changed = false;
+    for (const email of list) {
+      const domain = email.split("@")[1] || "";
+      if (allowedDomains.has(domain) || existing.has(email)) continue;
+      include.push({ email: { email } });
+      existing.add(email);
+      changed = true;
+    }
+    if (!changed) return;
+    const putRes = await fetch(url, {
+      method: "PUT",
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: pol.name, decision: pol.decision, include,
+        exclude: pol.exclude || [], require: pol.require || [],
+      }),
+    });
+    if (!putRes.ok) console.error("Access allowlist PUT non-2xx:", putRes.status, (await putRes.text()).slice(0, 200));
+  } catch (err) {
+    console.error("Access allowlist update failed:", err && err.message);
+  }
+}
+
+// Fire both onboarding side-effects for a batch of freshly-created invites.
+// entries: [{ email, invite_url, role }]. Returns the number of emails sent.
+async function onboardInvites(env, entries) {
+  if (!entries || !entries.length) return 0;
+  await addToAccessAllowlist(env, entries.map((e) => e.email));
+  const sent = await Promise.all(
+    entries.map((e) => sendInviteEmail(env, e.email, e.invite_url, e.role))
+  );
+  return sent.filter(Boolean).length;
+}
+
 async function handleAuthInvite(request, env) {
   const gate = await requireAuthGate(request, env);
   if (gate.error) return gate.error;
@@ -864,33 +967,11 @@ async function handleAuthInvite(request, env) {
 
   const invite_url = `${ADMIN_CONSOLE_ORIGIN}/admin/accept-invite?token=${token}`;
 
-  // Best-effort email send — a Resend failure must never fail the invite
-  // itself; invite_url is always returned so the operator can share it
-  // manually.
-  if (env.RESEND_API_KEY) {
-    try {
-      await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${env.RESEND_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: env.LAB_INVITE_FROM || "OneFlare Lab <onboarding@one-flare.com>",
-          to: [email],
-          subject: "You're invited to the OneFlare admin console",
-          html:
-            `<p>You've been invited to the OneFlare admin console as <strong>${role}</strong>.</p>` +
-            `<p><a href="${invite_url}">Accept your invite</a> to set your password.</p>` +
-            `<p>This link expires in 7 days.</p>`,
-        }),
-      });
-    } catch (err) {
-      console.error("Resend invite email failed:", err && err.message);
-    }
-  }
+  // Best-effort onboarding — an email/allowlist failure must never fail the
+  // invite; invite_url is always returned so the operator can share it manually.
+  const sent = await onboardInvites(env, [{ email, invite_url, role }]);
 
-  return json({ ok: true, invite_url, email, role, expires_at: row.expires_at });
+  return json({ ok: true, invite_url, email, role, expires_at: row.expires_at, email_sent: sent > 0 });
 }
 
 // Bulk invite: a delimited list (or array) of emails → N invites in one shot.
@@ -943,7 +1024,13 @@ async function handleAuthInviteBulk(request, env) {
       expires_at: row.expires_at,
     });
   }
-  return json({ ok: true, count: results.length, results });
+
+  // Onboard all newly-invited emails in one shot (batched allowlist PUT + emails
+  // sent concurrently). Best-effort; never fails the invite response.
+  const fresh = results.filter((r) => r.status === "invited");
+  const emailed = await onboardInvites(env, fresh);
+
+  return json({ ok: true, count: results.length, emailed, results });
 }
 
 async function handleAuthAcceptInvite(request, env) {
@@ -1071,7 +1158,8 @@ async function handleAuthBootstrap(request, env) {
   await appendHistory(env, { type: "bootstrap_invite_created", email });
 
   const invite_url = `${ADMIN_CONSOLE_ORIGIN}/admin/accept-invite?token=${token}`;
-  return json({ ok: true, invite_url, email, role: "admin", expires_at: row.expires_at });
+  const sent = await onboardInvites(env, [{ email, invite_url, role: "admin" }]);
+  return json({ ok: true, invite_url, email, role: "admin", expires_at: row.expires_at, email_sent: sent > 0 });
 }
 
 // ── /auth/lab/* — session-gated, self-service tenant (the caller's OWN lab) ──
