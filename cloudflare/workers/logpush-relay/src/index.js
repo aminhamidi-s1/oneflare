@@ -1087,7 +1087,13 @@ async function sendAccountRequestEmail(env, toEmails, req, accept_url) {
       },
       body: JSON.stringify({
         from: env.LAB_INVITE_FROM || "OneFlare Lab <onboarding@one-flare.com>",
-        to: recipients,
+        // ONE shared email to the whole admin group. The first admin is the To and
+        // the rest are CC'd (real inboxes on every line), so all admins see each other
+        // on one thread; reply_to is the full group so ANY reply — not just reply-all —
+        // reflects back to every admin.
+        to: [recipients[0]],
+        ...(recipients.length > 1 ? { cc: recipients.slice(1) } : {}),
+        reply_to: recipients,
         subject: `OneFlare account request from ${req.name || req.email}`,
         html: accountRequestEmailHtml(req, accept_url),
       }),
