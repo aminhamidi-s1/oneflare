@@ -46,7 +46,7 @@ export default function Navbar() {
   // visitor already has a valid admin-console session (GET /api/auth/me),
   // and only on an instance where admin is enabled at all.
   const [adminEnabled, setAdminEnabled] = useState(false)
-  const [authed, setAuthed] = useState(false)
+  const [role, setRole] = useState(null)
   useEffect(() => {
     let alive = true
     fetch('/api/config')
@@ -54,10 +54,14 @@ export default function Navbar() {
       .then(cfg => { if (alive && cfg?.admin_enabled) setAdminEnabled(true) })
       .catch(() => {})
     fetch('/api/auth/me')
-      .then(r => { if (alive) setAuthed(r.ok) })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { if (alive) setRole(data?.role ?? null) })
       .catch(() => {})
     return () => { alive = false }
   }, [location.pathname])
+
+  // `user` role is a self-service tenant — it must never see the admin console.
+  const canSeeAdmin = role === 'admin' || role === 'viewer'
 
   return (
     <nav className="glass-nav sticky top-0 z-50">
@@ -89,7 +93,7 @@ export default function Navbar() {
 
         {/* Admin — only visible once already logged in (discreet by design;
             see Settings page footer for the actual entry point) */}
-        {adminEnabled && authed && (
+        {adminEnabled && canSeeAdmin && (
           <NavLink
             to="/admin"
             className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 shrink-0 ${

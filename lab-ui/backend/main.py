@@ -592,27 +592,50 @@ def lab_tenants(request: Request):
 # i.e. the one-flare.com deployment; partner instances get 403)
 # ---------------------------------------------------------------------------
 def _require_admin():
+    """admin_enabled() only — for the bootstrap break-glass (no caller session
+    exists yet). Do NOT use for the registry proxy; use _require_console_admin."""
     if not _li.admin_enabled():
         raise HTTPException(status_code=403, detail="Admin is not enabled on this instance")
 
 
+def _require_console_admin(request: Request, allow_viewer: bool = False):
+    """Gate the ADMIN_TOKEN-backed relay proxy by the CALLER's role.
+
+    These routes proxy to the relay using the console's break-glass ADMIN_TOKEN,
+    so the relay can't distinguish who is calling — the console MUST verify the
+    caller is themselves an admin (or viewer for read-only routes). Without this,
+    any logged-in `user` could read/mutate the whole registry through the proxy.
+    """
+    if not _li.admin_enabled():
+        raise HTTPException(status_code=403, detail="Admin is not enabled on this instance")
+    if not _multi_user_mode():
+        return  # single-operator console (no user sessions to distinguish)
+    session = _session_from_cookies(dict(request.cookies))
+    if not session:
+        raise HTTPException(status_code=401, detail="login required")
+    role = session.get("role")
+    if role == "admin" or (allow_viewer and role == "viewer"):
+        return
+    raise HTTPException(status_code=403, detail="admin role required")
+
+
 @app.get("/api/admin/registry")
-def admin_registry():
-    _require_admin()
+def admin_registry(request: Request):
+    _require_console_admin(request, allow_viewer=True)
     status, body = _li.admin_request("GET", "/admin/registry")
     return JSONResponse(status_code=status, content=body)
 
 
 @app.get("/api/admin/history")
-def admin_history():
-    _require_admin()
+def admin_history(request: Request):
+    _require_console_admin(request, allow_viewer=True)
     status, body = _li.admin_request("GET", "/admin/history")
     return JSONResponse(status_code=status, content=body)
 
 
 @app.post("/api/admin/user/{subdomain}/{action}")
-def admin_user_action(subdomain: str, action: str):
-    _require_admin()
+def admin_user_action(request: Request, subdomain: str, action: str):
+    _require_console_admin(request)
     if action not in ("enable", "disable"):
         raise HTTPException(status_code=400, detail="action must be 'enable' or 'disable'")
     status, body = _li.admin_request("POST", f"/admin/user/{subdomain}/{action}")
@@ -620,20 +643,20 @@ def admin_user_action(subdomain: str, action: str):
 
 
 @app.delete("/api/admin/user/{subdomain}")
-def admin_user_delete(subdomain: str):
-    _require_admin()
+def admin_user_delete(request: Request, subdomain: str):
+    _require_console_admin(request)
     status, body = _li.admin_request("DELETE", f"/admin/user/{subdomain}")
     return JSONResponse(status_code=status, content=body)
 
 
 @app.post("/api/admin/users/delete")
-def admin_users_delete(body: AdminBatchDeleteRequest):
+def admin_users_delete(request: Request, body: AdminBatchDeleteRequest):
     """Batch teardown — deletes each subdomain's relay registry row in turn.
 
     Best-effort per-row: one failure doesn't stop the rest. Response:
     {ok, results: [{subdomain, status}]}.
     """
-    _require_admin()
+    _require_console_admin(request)
     results = []
     for subdomain in body.subdomains:
         status, _ = _li.admin_request("DELETE", f"/admin/user/{subdomain}")

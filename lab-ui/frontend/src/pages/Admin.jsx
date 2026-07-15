@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ShieldCheck, RefreshCw, Users, History as HistoryIcon,
   Power, PowerOff, Trash2, Lock, PlugZap, AlertTriangle, Clock,
@@ -55,13 +56,13 @@ function StatusBadge({ status }) {
 }
 
 function RoleBadge({ role }) {
-  const isAdmin = role === 'admin'
+  const styles = role === 'admin'
+    ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30'
+    : role === 'user'
+      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+      : 'bg-slate-500/15 text-slate-400 border border-slate-500/30'
   return (
-    <span className={`inline-flex items-center rounded-full font-semibold font-mono tracking-wide px-2 py-0.5 text-xs ${
-      isAdmin
-        ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30'
-        : 'bg-slate-500/15 text-slate-400 border border-slate-500/30'
-    }`}>
+    <span className={`inline-flex items-center rounded-full font-semibold font-mono tracking-wide px-2 py-0.5 text-xs ${styles}`}>
       {role || 'viewer'}
     </span>
   )
@@ -140,8 +141,10 @@ function LoginForm({ onLoggedIn }) {
 }
 
 // ── Tenants table ─────────────────────────────────────────────────────────────
-function TenantsTable({ registry, onToggle, onDelete, actionBusy, selected, onToggleSelect, onToggleSelectAll, readOnly }) {
-  if (registry.length === 0) {
+const TENANTS_GRID_COLS = 'grid-cols-[auto_1fr_1fr_1fr_auto_auto_auto_1.2fr_auto]'
+
+function TenantsTable({ rows, onToggle, onDelete, actionBusy, selected, onToggleSelect, onToggleSelectAll, readOnly }) {
+  if (rows.length === 0) {
     return (
       <div className="rounded-xl border border-[#2d1b4e] bg-[#1a0a2e]/50 p-12 flex flex-col items-center gap-4">
         <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center">
@@ -155,22 +158,27 @@ function TenantsTable({ registry, onToggle, onDelete, actionBusy, selected, onTo
     )
   }
 
+  // Placeholder rows (users without a registered tenant yet) aren't
+  // selectable for batch-delete — "select all" only ever counts real tenants.
+  const selectableRows = rows.filter((r) => !r.__placeholder)
+
   return (
     <div className="rounded-xl border border-[#2d1b4e] overflow-hidden">
       <div className="overflow-x-auto">
-        <div className="min-w-[880px]">
+        <div className="min-w-[1000px]">
           {/* Table header */}
-          <div className="grid grid-cols-[auto_1fr_1fr_auto_auto_auto_1.2fr_auto] gap-4 px-5 py-3 bg-[#1a0a2e] border-b border-[#2d1b4e] text-xs font-semibold text-slate-500 uppercase tracking-wider items-center">
+          <div className={`grid ${TENANTS_GRID_COLS} gap-4 px-5 py-3 bg-[#1a0a2e] border-b border-[#2d1b4e] text-xs font-semibold text-slate-500 uppercase tracking-wider items-center`}>
             <input
               type="checkbox"
-              checked={registry.length > 0 && selected.size === registry.length}
+              checked={selectableRows.length > 0 && selected.size === selectableRows.length}
               onChange={onToggleSelectAll}
-              disabled={readOnly}
+              disabled={readOnly || selectableRows.length === 0}
               className="accent-orange-500 disabled:opacity-30"
               aria-label="Select all tenants"
             />
             <span>Name</span>
             <span>Subdomain</span>
+            <span>Owner</span>
             <span>Status</span>
             <span>Forwarded</span>
             <span>Last Seen</span>
@@ -178,44 +186,65 @@ function TenantsTable({ registry, onToggle, onDelete, actionBusy, selected, onTo
             <span>Actions</span>
           </div>
 
-          {registry.map((entry) => {
+          {rows.map((entry) => {
+            const isPlaceholder = !!entry.__placeholder
+            const rowKey = entry.subdomain || entry.owner_email
             const busy = actionBusy === entry.subdomain
             return (
               <div
-                key={entry.subdomain}
-                className="grid grid-cols-[auto_1fr_1fr_auto_auto_auto_1.2fr_auto] gap-4 px-5 py-3.5 border-b border-[#1e1235] last:border-0 hover:bg-white/[0.02] transition-colors items-center"
+                key={rowKey}
+                className={`grid ${TENANTS_GRID_COLS} gap-4 px-5 py-3.5 border-b border-[#1e1235] last:border-0 hover:bg-white/[0.02] transition-colors items-center ${isPlaceholder ? 'opacity-50' : ''}`}
               >
-                <input
-                  type="checkbox"
-                  checked={selected.has(entry.subdomain)}
-                  onChange={() => onToggleSelect(entry.subdomain)}
-                  disabled={readOnly}
-                  className="accent-orange-500 disabled:opacity-30"
-                  aria-label={`Select ${entry.subdomain}`}
-                />
+                {isPlaceholder ? (
+                  <span />
+                ) : (
+                  <input
+                    type="checkbox"
+                    checked={selected.has(entry.subdomain)}
+                    onChange={() => onToggleSelect(entry.subdomain)}
+                    disabled={readOnly}
+                    className="accent-orange-500 disabled:opacity-30"
+                    aria-label={`Select ${entry.subdomain}`}
+                  />
+                )}
                 <span className="text-sm font-medium text-slate-200 truncate">{entry.name || '—'}</span>
-                <span className="text-xs font-mono text-purple-300 truncate">{entry.subdomain}</span>
-                <StatusBadge status={entry.status} />
-                <span className="text-xs font-mono text-slate-400">{entry.forwarded ?? 0}</span>
-                <span className="text-xs font-mono text-slate-500 whitespace-nowrap">{formatTime(entry.last_seen)}</span>
-                <div className="text-xs font-mono text-slate-400 min-w-0 space-y-0.5">
-                  <div className="truncate">
-                    <span className="text-slate-500">Site: </span>
-                    <span className="text-slate-200">{entry.site_label || '—'}</span>
+                {isPlaceholder ? (
+                  <span className="text-xs font-mono text-slate-600 italic truncate">not registered yet</span>
+                ) : (
+                  <span className="text-xs font-mono text-purple-300 truncate">{entry.subdomain}</span>
+                )}
+                <span className="text-xs font-mono text-slate-400 truncate">{entry.owner_email || '—'}</span>
+                {isPlaceholder ? (
+                  <span className="text-xs text-slate-600">—</span>
+                ) : (
+                  <StatusBadge status={entry.status} />
+                )}
+                <span className="text-xs font-mono text-slate-400">{isPlaceholder ? '—' : (entry.forwarded ?? 0)}</span>
+                <span className="text-xs font-mono text-slate-500 whitespace-nowrap">{isPlaceholder ? '—' : formatTime(entry.last_seen)}</span>
+                {isPlaceholder ? (
+                  <span className="text-xs text-slate-600">—</span>
+                ) : (
+                  <div className="text-xs font-mono text-slate-400 min-w-0 space-y-0.5">
+                    <div className="truncate">
+                      <span className="text-slate-500">Site: </span>
+                      <span className="text-slate-200">{entry.site_label || '—'}</span>
+                    </div>
+                    <div className="truncate">
+                      <span className="text-slate-500">Account: </span>
+                      <span className="text-slate-200">{entry.account_label || '—'}</span>
+                    </div>
+                    <div className="text-slate-400 truncate" title={entry.s1_console_url || entry.s1_hec_url || ''}>
+                      {destHost(entry)}
+                    </div>
+                    <div className="text-slate-600 truncate" title="HEC token (redacted)">
+                      token {tokenTail(entry.s1_hec_token)}
+                    </div>
                   </div>
-                  <div className="truncate">
-                    <span className="text-slate-500">Account: </span>
-                    <span className="text-slate-200">{entry.account_label || '—'}</span>
-                  </div>
-                  <div className="text-slate-400 truncate" title={entry.s1_console_url || entry.s1_hec_url || ''}>
-                    {destHost(entry)}
-                  </div>
-                  <div className="text-slate-600 truncate" title="HEC token (redacted)">
-                    token {tokenTail(entry.s1_hec_token)}
-                  </div>
-                </div>
+                )}
                 <div className="flex items-center gap-2 justify-end">
-                  {readOnly ? (
+                  {isPlaceholder ? (
+                    <span className="text-xs text-slate-600">—</span>
+                  ) : readOnly ? (
                     <span className="text-xs text-slate-600 italic">view only</span>
                   ) : (
                     <>
@@ -333,6 +362,44 @@ function InviteUrlBanner({ invite, onDismiss }) {
   )
 }
 
+function BulkResultRow({ result }) {
+  const [copied, setCopied] = useState(false)
+  const invited = result.status === 'invited'
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(result.invite_url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // clipboard API unavailable — user can select the text manually
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1e1235] last:border-0">
+      <span className="text-xs font-mono text-slate-300 truncate flex-1 min-w-0">{result.email}</span>
+      <span className={`inline-flex items-center rounded-full font-semibold px-2 py-0.5 text-xs shrink-0 ${
+        invited
+          ? 'bg-green-500/15 text-green-400 border border-green-500/30'
+          : 'bg-slate-500/15 text-slate-400 border border-slate-500/30'
+      }`}>
+        {result.status}
+      </span>
+      {invited && result.invite_url && (
+        <>
+          <code className="text-xs font-mono text-purple-300 bg-[#12081f] border border-[#2d1b4e] rounded-lg px-2 py-1 truncate max-w-[260px]">
+            {result.invite_url}
+          </code>
+          <button onClick={copy} className="btn-ghost text-xs px-2 py-1 shrink-0">
+            {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 function UsersTab({ role }) {
   const [users, setUsers] = useState([])
   const [invites, setInvites] = useState([])
@@ -343,6 +410,12 @@ function UsersTab({ role }) {
   const [inviting, setInviting] = useState(false)
   const [lastInvite, setLastInvite] = useState(null)
   const [busyEmail, setBusyEmail] = useState(null)
+
+  const [bulkEmails, setBulkEmails] = useState('')
+  const [bulkRole, setBulkRole] = useState('user')
+  const [bulkInviting, setBulkInviting] = useState(false)
+  const [bulkError, setBulkError] = useState('')
+  const [bulkResults, setBulkResults] = useState([])
 
   const isAdmin = role === 'admin'
 
@@ -391,6 +464,32 @@ function UsersTab({ role }) {
     }
   }
 
+  async function handleBulkInvite(e) {
+    e.preventDefault()
+    if (!bulkEmails.trim()) return
+    setBulkInviting(true)
+    setBulkError('')
+    try {
+      const res = await fetch('/api/auth/invite-bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emails: bulkEmails, role: bulkRole }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setBulkError(data.error || data.detail || 'Failed to create invites')
+        return
+      }
+      setBulkResults(data.results || [])
+      setBulkEmails('')
+      await load()
+    } catch (err) {
+      setBulkError('Could not reach backend.')
+    } finally {
+      setBulkInviting(false)
+    }
+  }
+
   async function handleRoleChange(email, newRole) {
     setBusyEmail(email)
     try {
@@ -435,6 +534,56 @@ function UsersTab({ role }) {
       )}
 
       {isAdmin && (
+        <div className="rounded-xl border border-[#2d1b4e] bg-[#1a0a2e]/50 p-4 space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" /> ThreatOps users — bulk invite
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Paste many emails (newline, comma, or space separated) to invite self-service tenants at once.
+            </p>
+          </div>
+          <form onSubmit={handleBulkInvite} className="space-y-3">
+            <textarea
+              value={bulkEmails}
+              onChange={(e) => setBulkEmails(e.target.value)}
+              rows={4}
+              placeholder={'alice@example.com\nbob@example.com, carol@example.com'}
+              className="w-full rounded-lg bg-[#12081f] border border-[#2d1b4e] px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-orange-500/50"
+            />
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Role</label>
+                <select
+                  value={bulkRole}
+                  onChange={(e) => setBulkRole(e.target.value)}
+                  className="mt-1 rounded-lg bg-[#12081f] border border-[#2d1b4e] px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500/50"
+                >
+                  <option value="user">user</option>
+                  <option value="viewer">viewer</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+              <button type="submit" disabled={bulkInviting || !bulkEmails.trim()} className="btn-primary text-sm disabled:opacity-40">
+                <UserPlus className="w-3.5 h-3.5" />
+                {bulkInviting ? 'Inviting...' : 'Invite all'}
+              </button>
+            </div>
+          </form>
+          <p className="text-xs text-yellow-400/80">
+            Reminder: Resend isn't configured on this deployment — share links manually; invitees also need
+            to be added to the Cloudflare Access allow-list.
+          </p>
+          {bulkError && <p className="text-xs text-red-400">{bulkError}</p>}
+          {bulkResults.length > 0 && (
+            <div className="rounded-lg border border-[#2d1b4e] overflow-hidden">
+              {bulkResults.map((r) => <BulkResultRow key={r.email} result={r} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAdmin && (
         <form onSubmit={handleInvite} className="rounded-xl border border-[#2d1b4e] bg-[#1a0a2e]/50 p-4 flex flex-wrap items-end gap-3">
           <div className="flex-1 min-w-[220px]">
             <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1">
@@ -456,6 +605,7 @@ function UsersTab({ role }) {
               onChange={(e) => setInviteRole(e.target.value)}
               className="mt-1 rounded-lg bg-[#12081f] border border-[#2d1b4e] px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-orange-500/50"
             >
+              <option value="user">user</option>
               <option value="viewer">viewer</option>
               <option value="admin">admin</option>
             </select>
@@ -493,6 +643,7 @@ function UsersTab({ role }) {
                     onChange={(e) => handleRoleChange(u.email, e.target.value)}
                     className="text-xs rounded-lg bg-[#12081f] border border-[#2d1b4e] px-2 py-1 text-slate-300 disabled:opacity-40"
                   >
+                    <option value="user">user</option>
                     <option value="viewer">viewer</option>
                     <option value="admin">admin</option>
                   </select>
@@ -542,6 +693,7 @@ export default function Admin() {
   const [errorMsg, setErrorMsg] = useState('')
   const [registry, setRegistry] = useState([])
   const [history, setHistory] = useState([])
+  const [users, setUsers] = useState([]) // for Tenants tab "not registered yet" placeholder rows
   const [activeTab, setActiveTab] = useState('tenants')
   const [refreshing, setRefreshing] = useState(false)
   const [actionBusy, setActionBusy] = useState(null)
@@ -597,11 +749,23 @@ export default function Admin() {
     }
   }, [])
 
+  const loadUsers = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/users')
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      setUsers(data.users || [])
+    } catch (err) {
+      // Non-fatal — only affects the "not registered yet" placeholder rows
+    }
+  }, [])
+
   useEffect(() => {
     if (authState !== 'loggedin') return
     (async () => {
       const ok = await loadRegistry()
       if (ok) await loadHistory()
+      await loadUsers()
     })()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authState])
@@ -610,6 +774,7 @@ export default function Admin() {
     setRefreshing(true)
     const ok = await loadRegistry()
     if (ok) await loadHistory()
+    await loadUsers()
     setRefreshing(false)
   }
 
@@ -697,7 +862,34 @@ export default function Admin() {
     )
   }
 
+  // Self-service tenants (`user` role) don't get the admin console at all —
+  // they manage their own lab from Settings.
+  if (session?.role === 'user') {
+    return (
+      <div className="page-enter max-w-screen-xl mx-auto">
+        <div className="rounded-xl border border-[#2d1b4e] bg-[#1a0a2e]/50 p-12 mt-10 flex flex-col items-center gap-3 text-center">
+          <Lock className="w-8 h-8 text-slate-500" />
+          <p className="text-slate-300 font-medium">This area is for administrators.</p>
+          <p className="text-sm text-slate-500 max-w-sm">
+            Manage your lab in{' '}
+            <Link to="/settings" className="text-orange-400 hover:text-orange-300 underline underline-offset-2">
+              Settings
+            </Link>.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   const isViewer = session?.role === 'viewer'
+
+  // Tenants tab: merge in users who haven't registered a lab yet, so admins
+  // can see who was invited/self-serviced but hasn't spun up an instance.
+  const ownerEmails = new Set(registry.map((e) => e.owner_email).filter(Boolean))
+  const placeholderRows = users
+    .filter((u) => (u.role === 'user' || u.role === 'admin') && u.email && !ownerEmails.has(u.email))
+    .map((u) => ({ owner_email: u.email, subdomain: null, status: 'not registered', __placeholder: true }))
+  const tenantRows = [...registry, ...placeholderRows]
 
   return (
     <div className="page-enter space-y-5 max-w-screen-xl mx-auto">
@@ -810,7 +1002,7 @@ export default function Admin() {
             )}
             {activeTab === 'tenants' && (
               <TenantsTable
-                registry={registry}
+                rows={tenantRows}
                 onToggle={handleToggle}
                 onDelete={handleDelete}
                 actionBusy={actionBusy}
