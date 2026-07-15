@@ -763,9 +763,9 @@ export default function ScenarioDetail() {
               <div className="space-y-2">
                 {[
                   { label: 'CF Domain', value: domain, required: true },
-                  { label: 'Shop URL', value: shopUrl, fallback: `https://shop.${domain || 'acmecorp.dev'}` },
-                  { label: 'Portal URL', value: portalUrl, fallback: `https://portal.${domain || 'acmecorp.dev'}` },
-                  { label: 'API URL', value: apiUrl, fallback: `https://api.${domain || 'acmecorp.dev'}` },
+                  { label: 'Shop URL', value: shopUrl, fallback: 'https://shop.soledrop.co' },
+                  { label: 'Portal URL', value: portalUrl, fallback: 'https://shop.soledrop.co' },
+                  { label: 'API URL', value: apiUrl, fallback: 'https://shop.soledrop.co' },
                 ].map(({ label, value, required, fallback }) => (
                   <div key={label} className="flex items-center gap-3">
                     <span className="text-xs text-slate-500 w-24 shrink-0">{label}</span>
