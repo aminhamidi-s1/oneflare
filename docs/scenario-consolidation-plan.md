@@ -132,6 +132,18 @@ email `amin.hamidi@sentinelone.com` → get invite_url; SEND it to that email (G
 (5) ADD amin.hamidi@sentinelone.com to the Cloudflare Access guest list so he can reach one-flare.com/admin
 (one-flare.com is behind Access OTP — see memory oneflare-access-gate). Invited external admins each need Access too.
 
+## DONE 2026-07-14 (eve) — RBAC console live on one-flare.com (commit 5b539e5)
+- Deployed Cloudflare Container got no env → wired `Backend extends Container` to forward
+  RELAY_URL/LAB_ENROLL_CODE/ADMIN_TOKEN/LAB_DOMAIN via the Container `envVars` property.
+  Values set as Worker secrets (`wrangler secret put`), not committed. `novamind-lab-ui`
+  redeployed (version 7246ec04). Verified live: /api/config admin_enabled:true, /api/auth/me 401,
+  /api/auth/login bad-creds 401, /api/admin/registry 200 w/ both tenants. First admin
+  `amin.hamidi@sentinelone.com` already active (password set, last_login 23:55) → sign in at
+  one-flare.com/admin (Access OTP first, then RBAC login). No invite link needed.
+- Admin "S1 Destination" column FIXED: was leading with the 60-char redacted token (overflowed
+  the column, hid the host = the "all asterisks" screenshot) → now leads with the HEC host,
+  token collapsed to its tail.
+
 ## OUTSTANDING
 - Bot/JA4: run `dataSource.name='Cloudflare' http_request.url.hostname='amin.lab.soledrop.co' ja4_fingerprint_list[0].value=* | group c=count()` — 0=JA4 not populating, >0=tune threshold. S1 IS REACHABLE now (Zscaler off) — s1lib.py in scratchpad works; note bracket-field LRQ syntax was finicky.
 - WS2: hide DNS-05 on partner instances (frontend data/scenarios.js + a flag) + relabel scenario cards (shop.acmecorp.dev/api.one-flare.com → the lab subdomain). DNS-05 also needs the hex `<id>.cloudflare-gateway.com/dns-query` URL, not the team cloudflareaccess URL.
