@@ -6,6 +6,7 @@ import asyncio
 import sys
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional, Union
 from urllib.parse import quote
@@ -186,11 +187,40 @@ def _multi_user_mode() -> bool:
 # The backend never decodes the session itself — it asks the relay (which owns
 # sessions) via the cookie-forwarding proxy. Used to login-gate execution and to
 # resolve each run's AUTHORITATIVE target (so a user can't attack another's site).
+_SESSION_COOKIE = "oneflare_admin_session"
+_session_cache: dict = {}          # sid -> (session_or_None, expires_at)
+_SESSION_CACHE_TTL = 15.0          # seconds — campaign logs poll ~1/s; don't hit the relay every time
+
+
 def _session_from_cookies(cookies: dict) -> Optional[dict]:
+    sid = (cookies or {}).get(_SESSION_COOKIE) or ""
+    now = time.time()
+    if sid:
+        cached = _session_cache.get(sid)
+        if cached and cached[1] > now:
+            return cached[0]
     status, data, _ = _li.auth_request("GET", "/auth/me", cookies=cookies or {})
-    if status == 200 and isinstance(data, dict) and data.get("email"):
-        return {"email": data["email"], "role": data.get("role")}
-    return None
+    session = (
+        {"email": data["email"], "role": data.get("role")}
+        if (status == 200 and isinstance(data, dict) and data.get("email"))
+        else None
+    )
+    if sid:
+        if len(_session_cache) > 256:      # opportunistic prune of expired entries
+            for k in [k for k, v in _session_cache.items() if v[1] <= now]:
+                _session_cache.pop(k, None)
+        _session_cache[sid] = (session, now + _SESSION_CACHE_TTL)
+    return session
+
+
+def _campaign_owner(request: Request) -> Optional[str]:
+    """Owner key for the caller's campaign session. None in single-tenant mode
+    (engine uses its default owner); the caller's email in multi-user mode; a
+    fixed '__anon__' for logged-out demo viewers (their own empty buffer)."""
+    if not _multi_user_mode():
+        return None
+    session = _session_from_cookies(dict(request.cookies))
+    return session["email"] if session else "__anon__"
 
 
 def _own_subdomain(cookies: dict) -> Optional[str]:
@@ -377,7 +407,7 @@ def _require_engine():
 
 
 @app.get("/api/campaigns")
-async def get_campaigns():
+async def get_campaigns(request: Request):
     """
     Return all campaign + phase metadata.
     Callables (fire_one / fire_many) are stripped — not JSON-serialisable.
@@ -385,7 +415,7 @@ async def get_campaigns():
                                     num_phases, phases: [...phase_dicts]}]
     """
     _require_engine()
-    return _ce.get_campaigns_meta()
+    return _ce.get_campaigns_meta(_campaign_owner(request))
 
 
 @app.post("/api/campaign/launch")
@@ -399,18 +429,20 @@ async def campaign_launch(request: Request, body: LaunchRequest):
                503 if campaign engine unavailable
     """
     _require_engine()
-    # Multi-user console: login-gate + resolve the authoritative target.
+    # Multi-user console: login-gate + resolve the authoritative target + owner.
     target = None
+    owner = None
     if _multi_user_mode():
         try:
-            target, _session = _resolve_run_target(dict(request.cookies), body.target_subdomain)
+            target, session = _resolve_run_target(dict(request.cookies), body.target_subdomain)
         except PermissionError:
             raise HTTPException(status_code=401, detail="Please log in to run campaigns.")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        owner = session["email"]
     try:
         loop = asyncio.get_event_loop()
-        _ce.launch(body.campaign, body.mode, body.phase, body.volume, loop, target=target)
+        _ce.launch(owner, body.campaign, body.mode, body.phase, body.volume, loop, target=target)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {
@@ -423,16 +455,17 @@ async def campaign_launch(request: Request, body: LaunchRequest):
 
 
 @app.get("/api/campaign/logs")
-async def campaign_logs(since: int = Query(default=0, ge=0)):
+async def campaign_logs(request: Request, since: int = Query(default=0, ge=0)):
     """
-    Incremental log polling.
+    Incremental log polling — scoped to the caller's own campaign session.
 
     Query param : since=<id>  (return only entries with id > since; default 0 = all)
     Response    : {entries:[...log_dicts], running:bool, phase:int|null, campaign:str|null}
     """
     _require_engine()
-    status  = _ce.get_status()
-    entries = _ce.get_logs(since)
+    owner   = _campaign_owner(request)
+    status  = _ce.get_status(owner)
+    entries = _ce.get_logs(owner, since)
     return {
         "entries":  entries,
         "running":  status["running"],
@@ -442,38 +475,42 @@ async def campaign_logs(since: int = Query(default=0, ge=0)):
 
 
 @app.get("/api/campaign/status")
-async def campaign_status():
+async def campaign_status(request: Request):
     """
-    Current engine state snapshot.
+    Current engine state snapshot for the caller's own campaign session.
     Response: {running:bool, phase:int|null, campaign:str|null}
     """
     _require_engine()
-    return _ce.get_status()
+    return _ce.get_status(_campaign_owner(request))
 
 
 @app.post("/api/campaign/stop")
 async def campaign_stop(request: Request):
     """
-    Stop the running campaign.
+    Stop the caller's own running campaign.
     If the campaign is 'ctf', signal_incident(False) is called automatically.
     Response: {stopped:true}
     """
     _require_engine()
-    if _multi_user_mode() and _session_from_cookies(dict(request.cookies)) is None:
-        raise HTTPException(status_code=401, detail="Please log in.")
-    _ce.stop()
+    owner = None
+    if _multi_user_mode():
+        session = _session_from_cookies(dict(request.cookies))
+        if session is None:
+            raise HTTPException(status_code=401, detail="Please log in.")
+        owner = session["email"]
+    _ce.stop(owner)
     return {"stopped": True}
 
 
 @app.post("/api/campaign/clear-incident")
-async def campaign_clear_incident():
+async def campaign_clear_incident(request: Request):
     """
-    Clear the AcmeCorp/Pyxis status page banner via signal_incident(False).
+    Clear the SoleDrop shop status banner via signal_incident(False).
     Idempotent — safe to call even when no campaign is running.
     Response: {cleared:true}
     """
     _require_engine()
-    _ce.clear_incident()
+    _ce.clear_incident(_campaign_owner(request))
     return {"cleared": True}
 
 

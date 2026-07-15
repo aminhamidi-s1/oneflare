@@ -68,32 +68,53 @@ PRESEED_VOLUMES = {
 }
 
 # ---------------------------------------------------------------------------
-# Module-level shared state
+# Per-owner engine state
 # ---------------------------------------------------------------------------
-_log_buffer: deque  = deque(maxlen=500)
-_log_counter: list  = [0]           # mutable single-element list — engine increments it
-_stop_event         = threading.Event()
+# Each user (keyed by owner, e.g. their email) gets an independent campaign
+# session — its own log buffer, stop flag, running state, and task. This lets
+# multiple users run campaigns concurrently with fully isolated logs/status, and
+# means one user's polling never sees another user's traffic. Single-tenant
+# instances just use one fixed owner (DEFAULT_OWNER).
+DEFAULT_OWNER = "__default__"
 
-_state = {
-    "running":  False,
-    "campaign": None,   # e.g. "ctf"
-    "phase":    None,   # current phase number (int) or None
-    # Per-launch target base URL (e.g. https://alice.lab.soledrop.co). Set by
-    # launch() in the multi-user console so the campaign hits the caller's own
-    # subdomain WITHOUT relying on the process-global SHOP_URL_OVERRIDE (which is
-    # deliberately unset in multi-user mode — one shared process, many users).
-    # None in single-tenant mode → falls back to the env/role routing below.
-    "target":   None,
-}
 
-_task: Optional[asyncio.Task] = None
+class _Session:
+    """One user's isolated campaign state."""
+    def __init__(self):
+        self.log_buffer: deque = deque(maxlen=500)
+        self.log_counter: list = [0]   # mutable single-element list — incremented in place
+        self.stop_event = threading.Event()
+        self.state = {
+            "running":  False,
+            "campaign": None,   # e.g. "ctf"
+            "phase":    None,   # current phase number (int) or None
+            # Per-launch target base URL (e.g. https://alice.lab.soledrop.co) so
+            # the campaign hits this owner's own subdomain without the
+            # process-global SHOP_URL_OVERRIDE (unset in multi-user mode).
+            "target":   None,
+        }
+        self.task: Optional[asyncio.Task] = None
+
+
+_sessions: "dict[str, _Session]" = {}
+_sessions_lock = threading.Lock()
+
+
+def _get_session(owner: Optional[str]) -> _Session:
+    key = owner or DEFAULT_OWNER
+    with _sessions_lock:
+        sess = _sessions.get(key)
+        if sess is None:
+            sess = _Session()
+            _sessions[key] = sess
+        return sess
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _signal_shop_incident(active: bool) -> bool:
+def _signal_shop_incident(sess: Optional["_Session"], active: bool) -> bool:
     """
     Flip the SoleDrop shop /status page. The CTF is hardcoded to the SoleDrop
     shop (CAMPAIGNS['ctf']['target_url']), which owns its own /api/incident + KV
@@ -109,7 +130,8 @@ def _signal_shop_incident(active: bool) -> bool:
             return False
         # Multi-tenant: the CTF (and its /status flip) follows the launch target
         # (multi-user console) or this instance's SHOP_URL_OVERRIDE (single-tenant).
-        target = (_state.get("target")
+        launch_target = sess.state.get("target") if sess else None
+        target = (launch_target
                   or os.getenv("SHOP_URL_OVERRIDE")
                   or CAMPAIGNS.get("ctf", {}).get("target_url", "https://shop.soledrop.co")).rstrip("/")
         payload = {
@@ -129,7 +151,7 @@ def _signal_shop_incident(active: bool) -> bool:
         return False
 
 
-def _resolve_target(campaign_key: str) -> str:
+def _resolve_target(sess: Optional["_Session"], campaign_key: str) -> str:
     """
     Build the base URL for a campaign. An explicit per-campaign `target_url`
     (e.g. the CTF's hardcoded SoleDrop shop) wins; otherwise `target_role`
@@ -141,7 +163,7 @@ def _resolve_target(campaign_key: str) -> str:
     # subdomain) wins over everything — it collapses shop/portal/api onto the one
     # subdomain, exactly like the subprocess scenario runner, so the campaign's
     # traffic is isolated to that user's SentinelOne site.
-    launch_target = _state.get("target")
+    launch_target = sess.state.get("target") if sess else None
     if launch_target:
         return launch_target.rstrip("/")
     # Multi-tenant lab: when this instance has a registered lab identity, its
@@ -171,11 +193,11 @@ def _resolve_target(campaign_key: str) -> str:
         return f"https://api.{domain}"
 
 
-def _append_system_event(msg: str, campaign_key: str, phase: int):
-    """Add a non-request system marker to the log buffer."""
-    _log_counter[0] += 1
-    _log_buffer.append({
-        "id":       _log_counter[0],
+def _append_system_event(sess: "_Session", msg: str, campaign_key: str, phase: int):
+    """Add a non-request system marker to the owner's log buffer."""
+    sess.log_counter[0] += 1
+    sess.log_buffer.append({
+        "id":       sess.log_counter[0],
         "type":     "system",
         "message":  msg,
         "campaign": campaign_key,
@@ -194,18 +216,18 @@ def _append_system_event(msg: str, campaign_key: str, phase: int):
 # Async drip-flow runners
 # ---------------------------------------------------------------------------
 
-async def _run_fire_one(phase_obj, target, campaign_key):
+async def _run_fire_one(sess, phase_obj, target, campaign_key):
     """Run one fire_one call off-thread so it doesn't block the event loop."""
     await asyncio.to_thread(
         phase_obj["fire_one"],
         target,
-        _log_buffer,
-        _log_counter,
-        _stop_event,
+        sess.log_buffer,
+        sess.log_counter,
+        sess.stop_event,
     )
 
 
-async def _live_loop(campaign_key: str, start_phase: int):
+async def _live_loop(sess, campaign_key: str, start_phase: int):
     """
     Live mode: cycle through phases.
     Each phase:
@@ -218,7 +240,7 @@ async def _live_loop(campaign_key: str, start_phase: int):
 
     campaign  = CAMPAIGNS[campaign_key]
     phases    = campaign["PHASES"]
-    target    = _resolve_target(campaign_key)
+    target    = _resolve_target(sess, campaign_key)
     is_ctf    = campaign_key == "ctf"
     phase_dur = CTF_LIVE_PHASE_DURATION_SECONDS if is_ctf else LIVE_PHASE_DURATION_SECONDS
 
@@ -226,12 +248,13 @@ async def _live_loop(campaign_key: str, start_phase: int):
     phase_list = [p for p in phases if p["number"] >= start_phase]
 
     for phase_obj in phase_list:
-        if _stop_event.is_set():
+        if sess.stop_event.is_set():
             break
 
         pnum = phase_obj["number"]
-        _state["phase"] = pnum
+        sess.state["phase"] = pnum
         _append_system_event(
+            sess,
             f"Phase {pnum} started: {phase_obj['name']}",
             campaign_key, pnum,
         )
@@ -240,14 +263,14 @@ async def _live_loop(campaign_key: str, start_phase: int):
         phase_end   = phase_start + phase_dur
 
         while _aio.get_event_loop().time() < phase_end:
-            if _stop_event.is_set():
+            if sess.stop_event.is_set():
                 break
 
             # Fire a batch of LIVE_BATCH_SIZE fire_one calls
             for _ in range(LIVE_BATCH_SIZE):
-                if _stop_event.is_set():
+                if sess.stop_event.is_set():
                     break
-                await _run_fire_one(phase_obj, target, campaign_key)
+                await _run_fire_one(sess, phase_obj, target, campaign_key)
                 # Polite sleep inside the batch — fire_one already sleeps
                 # internally (3-8s) but we add a tiny yield for the event loop
                 await _aio.sleep(0)
@@ -264,19 +287,20 @@ async def _live_loop(campaign_key: str, start_phase: int):
                 break
 
         _append_system_event(
+            sess,
             f"Phase {pnum} complete: {phase_obj['name']}",
             campaign_key, pnum,
         )
 
 
-async def _preseed_loop(campaign_key: str, phase_selector, volume: str):
+async def _preseed_loop(sess, campaign_key: str, phase_selector, volume: str):
     """
     Preseed mode: fire_many across selected phases, fast batch.
     Volume budget is split evenly across selected phases.
     """
     campaign   = CAMPAIGNS[campaign_key]
     phases     = campaign["PHASES"]
-    target     = _resolve_target(campaign_key)
+    target     = _resolve_target(sess, campaign_key)
     total      = PRESEED_VOLUMES.get(volume, PRESEED_VOLUMES["medium"])
 
     if phase_selector == "all":
@@ -288,11 +312,12 @@ async def _preseed_loop(campaign_key: str, phase_selector, volume: str):
     delay_range = (0.05, 0.2)   # fast preseed cadence
 
     for phase_obj in selected:
-        if _stop_event.is_set():
+        if sess.stop_event.is_set():
             break
         pnum = phase_obj["number"]
-        _state["phase"] = pnum
+        sess.state["phase"] = pnum
         _append_system_event(
+            sess,
             f"Preseed Phase {pnum}: {phase_obj['name']} ({per_phase} requests)",
             campaign_key, pnum,
         )
@@ -301,46 +326,49 @@ async def _preseed_loop(campaign_key: str, phase_selector, volume: str):
             per_phase,
             delay_range,
             target,
-            _log_buffer,
-            _log_counter,
-            _stop_event,
+            sess.log_buffer,
+            sess.log_counter,
+            sess.stop_event,
         )
         _append_system_event(
+            sess,
             f"Preseed Phase {pnum} complete",
             campaign_key, pnum,
         )
 
 
-async def _engine_task(campaign_key: str, mode: str, phase, volume: str):
+async def _engine_task(sess, campaign_key: str, mode: str, phase, volume: str):
     """Top-level async task — manages CTF incident signalling and hands off."""
     is_ctf = campaign_key == "ctf"
 
     if is_ctf:
-        await asyncio.to_thread(_signal_shop_incident, True)
+        await asyncio.to_thread(_signal_shop_incident, sess, True)
 
     try:
         if mode == "live":
             start_phase = 1 if phase == "all" else int(phase)
-            await _live_loop(campaign_key, start_phase)
+            await _live_loop(sess, campaign_key, start_phase)
         else:
-            await _preseed_loop(campaign_key, phase, volume)
+            await _preseed_loop(sess, campaign_key, phase, volume)
     finally:
-        _state["running"]  = False
-        _state["campaign"] = None
-        _state["phase"]    = None
-        _state["target"]   = None
-        _append_system_event("Campaign stopped", campaign_key, 0)
+        sess.state["running"]  = False
+        sess.state["campaign"] = None
+        sess.state["phase"]    = None
+        sess.state["target"]   = None
+        _append_system_event(sess, "Campaign stopped", campaign_key, 0)
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_campaigns_meta() -> dict:
+def get_campaigns_meta(owner: Optional[str] = None) -> dict:
     """
     Return all campaign + phase metadata, stripping out the callable fire_*
-    functions (not JSON-serialisable).
+    functions (not JSON-serialisable). The displayed `target` reflects the
+    owner's launch target if a campaign is running, else the role/config default.
     """
+    sess = _get_session(owner)
     result = {}
     for key, campaign in CAMPAIGNS.items():
         phases_meta = []
@@ -356,7 +384,7 @@ def get_campaigns_meta() -> dict:
             "color":       campaign["color"],
             "icon":        campaign["icon"],
             "target_role": campaign["target_role"],
-            "target":      _resolve_target(key),
+            "target":      _resolve_target(sess, key),
             "num_phases":  campaign["num_phases"],
             "phases":      phases_meta,
         }
@@ -366,6 +394,7 @@ def get_campaigns_meta() -> dict:
 
 
 def launch(
+    owner: Optional[str],
     campaign_key: str,
     mode: str,
     phase,
@@ -374,7 +403,7 @@ def launch(
     target: Optional[str] = None,
 ) -> None:
     """
-    Start the drip-flow engine.
+    Start the drip-flow engine for `owner` (their isolated session).
 
     `target` (optional): base URL to run against (e.g. https://alice.lab.soledrop.co).
     In the multi-user console this is the caller's resolved lab subdomain; the
@@ -382,14 +411,13 @@ def launch(
 
     Raises
     ------
-    ValueError  if a campaign is already running, the campaign_key is unknown,
-                mode/volume is invalid, or the campaigns package is unavailable.
+    ValueError  if this owner already has a campaign running, the campaign_key is
+                unknown, mode/volume is invalid, or the campaigns package is absent.
     """
-    global _task
-
     if not _CAMPAIGNS_AVAILABLE:
         raise ValueError(f"campaigns package not available: {_IMPORT_ERROR}")
-    if _state["running"]:
+    sess = _get_session(owner)
+    if sess.state["running"]:
         raise ValueError("A campaign is already running")
     if campaign_key not in CAMPAIGNS:
         raise ValueError(f"Unknown campaign: {campaign_key!r}")
@@ -399,49 +427,53 @@ def launch(
         raise ValueError(f"volume must be low/medium/high, got {volume!r}")
 
     # Reset stop flag and state
-    _stop_event.clear()
-    _state["running"]  = True
-    _state["campaign"] = campaign_key
-    _state["phase"]    = 1
-    _state["target"]   = (target or None)
+    sess.stop_event.clear()
+    sess.state["running"]  = True
+    sess.state["campaign"] = campaign_key
+    sess.state["phase"]    = 1
+    sess.state["target"]   = (target or None)
 
     _append_system_event(
+        sess,
         f"Campaign launched: {CAMPAIGNS[campaign_key]['name']} | mode={mode} | phase={phase} | volume={volume}",
         campaign_key, 1,
     )
 
-    _task = loop.create_task(
-        _engine_task(campaign_key, mode, phase, volume),
-        name=f"drip-{campaign_key}",
+    sess.task = loop.create_task(
+        _engine_task(sess, campaign_key, mode, phase, volume),
+        name=f"drip-{owner or DEFAULT_OWNER}-{campaign_key}",
     )
 
 
-def stop() -> None:
-    """Signal the running campaign to stop."""
-    _stop_event.set()
-    _state["running"]  = False
-    campaign_key = _state.get("campaign")
-    _state["campaign"] = None
-    _state["phase"]    = None
+def stop(owner: Optional[str] = None) -> None:
+    """Signal this owner's running campaign to stop."""
+    sess = _get_session(owner)
+    sess.stop_event.set()
+    sess.state["running"]  = False
+    campaign_key = sess.state.get("campaign")
+    sess.state["campaign"] = None
+    sess.state["phase"]    = None
 
     if campaign_key == "ctf":
-        _signal_shop_incident(False)
-    _state["target"]   = None
+        _signal_shop_incident(sess, False)
+    sess.state["target"]   = None
 
 
-def clear_incident() -> None:
+def clear_incident(owner: Optional[str] = None) -> None:
     """Clear the SoleDrop shop status banner without stopping the campaign."""
-    _signal_shop_incident(False)
+    _signal_shop_incident(_get_session(owner), False)
 
 
-def get_logs(since: int = 0) -> list:
-    """Return log entries with id > since."""
-    return [e for e in _log_buffer if e["id"] > since]
+def get_logs(owner: Optional[str] = None, since: int = 0) -> list:
+    """Return this owner's log entries with id > since."""
+    sess = _get_session(owner)
+    return [e for e in sess.log_buffer if e["id"] > since]
 
 
-def get_status() -> dict:
+def get_status(owner: Optional[str] = None) -> dict:
+    sess = _get_session(owner)
     return {
-        "running":  _state["running"],
-        "phase":    _state["phase"],
-        "campaign": _state["campaign"],
+        "running":  sess.state["running"],
+        "phase":    sess.state["phase"],
+        "campaign": sess.state["campaign"],
     }
