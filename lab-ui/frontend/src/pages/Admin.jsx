@@ -25,6 +25,16 @@ function hecHost(url) {
   }
 }
 
+// The relay redacts the HEC token to a long run of asterisks + a short tail
+// (e.g. "****************M/NH"). Showing the full mask is useless and, in a
+// fixed-width column, pushes the actual destination host out of view. Collapse
+// it to just the identifying tail.
+function tokenTail(tok) {
+  if (!tok) return '—'
+  const tail = tok.replace(/^[*•]+/, '')
+  return tail ? `…${tail}` : '••••'
+}
+
 function StatusBadge({ status }) {
   const active = status === 'active'
   return (
@@ -182,13 +192,19 @@ function TenantsTable({ registry, onToggle, onDelete, actionBusy, selected, onTo
                 <StatusBadge status={entry.status} />
                 <span className="text-xs font-mono text-slate-400">{entry.forwarded ?? 0}</span>
                 <span className="text-xs font-mono text-slate-500 whitespace-nowrap">{formatTime(entry.last_seen)}</span>
-                <div className="text-xs font-mono text-slate-400 truncate">
+                <div className="text-xs font-mono text-slate-400 min-w-0">
                   {entry.site_label && (
                     <div className="text-slate-300 truncate mb-0.5">{entry.site_label}</div>
                   )}
-                  <span className="text-slate-300">{entry.s1_hec_token || '****'}</span>
-                  <span className="text-slate-600"> @ </span>
-                  <span>{hecHost(entry.s1_hec_url)}</span>
+                  <div
+                    className="text-slate-200 truncate"
+                    title={entry.s1_hec_url || ''}
+                  >
+                    {hecHost(entry.s1_hec_url)}
+                  </div>
+                  <div className="text-slate-500 truncate" title="HEC token (redacted)">
+                    token {tokenTail(entry.s1_hec_token)}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 justify-end">
                   {readOnly ? (

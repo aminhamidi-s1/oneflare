@@ -17,6 +17,22 @@ import { Container, getContainer } from "@cloudflare/containers";
 export class Backend extends Container {
   defaultPort = 8000;
   sleepAfter = "10m";
+
+  constructor(ctx, env, options) {
+    super(ctx, env, options);
+    // Cloudflare Containers get no environment by default — the backend
+    // (os.getenv) sees nothing unless we forward the Worker's bindings in.
+    // These come from wrangler.jsonc `vars` (RELAY_URL, LAB_DOMAIN — public)
+    // and `wrangler secret put` (ADMIN_TOKEN, LAB_ENROLL_CODE — secret).
+    // Empty string when a binding is absent = feature disabled, matching the
+    // partner-instance / local-docker defaults. Only non-empty values are
+    // forwarded so an unset secret doesn't shadow a Dockerfile/compose default.
+    const forwarded = {};
+    for (const key of ["RELAY_URL", "LAB_ENROLL_CODE", "ADMIN_TOKEN", "LAB_DOMAIN"]) {
+      if (env[key]) forwarded[key] = env[key];
+    }
+    this.envVars = forwarded;
+  }
 }
 
 export default {
