@@ -1033,6 +1033,20 @@ async function handleAuthInviteBulk(request, env) {
   return json({ ok: true, count: results.length, emailed, results });
 }
 
+// Public (token-gated) invite lookup — lets the accept-invite page show who the
+// invite is for and which role, before the password is set. The token IS the
+// credential (only the intended recipient has the link); returns no secrets.
+async function handleAuthInviteInfo(request, env) {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token") || "";
+  if (!token) return json({ error: "token is required" }, 400);
+  const invite = await getInvite(env, token);
+  if (!invite || isExpired(invite.expires_at)) {
+    return json({ error: "invalid or expired invite" }, 404);
+  }
+  return json({ ok: true, email: invite.email, role: invite.role, expires_at: invite.expires_at });
+}
+
 async function handleAuthAcceptInvite(request, env) {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   let body;
@@ -1269,6 +1283,7 @@ export default {
     if (path === "/auth/me" && request.method === "GET") return handleAuthMe(request, env);
     if (path === "/auth/invite" && request.method === "POST") return handleAuthInvite(request, env);
     if (path === "/auth/invite-bulk" && request.method === "POST") return handleAuthInviteBulk(request, env);
+    if (path === "/auth/invite-info" && request.method === "GET") return handleAuthInviteInfo(request, env);
     if (path === "/auth/accept-invite" && request.method === "POST") return handleAuthAcceptInvite(request, env);
     if (path === "/auth/users" && request.method === "GET") return handleAuthUsers(request, env);
     if (path === "/auth/bootstrap" && request.method === "POST") return handleAuthBootstrap(request, env);

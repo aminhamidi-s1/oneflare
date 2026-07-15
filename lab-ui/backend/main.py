@@ -744,6 +744,11 @@ def auth_invite_bulk(request: Request, body: AuthInviteBulkRequest):
     return _proxy_auth(request, "POST", "/auth/invite-bulk", body.dict())
 
 
+@app.get("/api/auth/invite-info")
+def auth_invite_info(request: Request, token: str = Query(...)):
+    return _proxy_auth(request, "GET", f"/auth/invite-info?token={quote(token, safe='')}")
+
+
 @app.post("/api/auth/accept-invite")
 def auth_accept_invite(request: Request, body: AuthAcceptInviteRequest):
     return _proxy_auth(request, "POST", "/auth/accept-invite", body.dict())
