@@ -882,8 +882,35 @@ def _s1_request(base: str, token: str, method: str, path: str,
 
 
 def _sdl_request(sdl_url: str, sdl_key: str, path: str, json_body: dict):
-    """SDL config API call (Bearer auth, POST)."""
+    """SDL config API call (Bearer auth, POST). sdl_key is the caller's console
+    service-user token — on Mgmt Z SP5+ it unlocks all SDL config methods, so no
+    separate SDL Config Write key is needed."""
     return _s1_request(sdl_url, sdl_key, "POST", path, json_body=json_body, scheme="Bearer")
+
+
+def _derive_sdl_xdr_url(console_url: str) -> Optional[str]:
+    """Best-effort SDL/XDR host from the console URL region. The console host is
+    `<region>-<company>.sentinelone.net` (e.g. usea1-acme); the SDL host is
+    `xdr.<dataRegion>.sentinelone.net` where dataRegion = the region's leading two
+    letters + trailing digits (usea1→us1, euce1→eu1, apse2→ap2). Verified:
+    usea1-partners → xdr.us1.sentinelone.net."""
+    import re
+    try:
+        host = console_url.split("//", 1)[-1].split("/", 1)[0]
+        region = host.split(".", 1)[0].split("-", 1)[0]  # usea1-partners → usea1
+        m = re.match(r"^([a-z]{2})[a-z]*([0-9]+)$", region)
+        if not m:
+            return None
+        return f"https://xdr.{m.group(1)}{m.group(2)}.sentinelone.net"
+    except Exception:
+        return None
+
+
+def _resolve_sdl_url(cfg: dict) -> Optional[str]:
+    """The SDL/XDR base URL: the operator's explicit override if set, else derived
+    from the console region."""
+    override = (cfg.get("sdl_xdr_url") or "").strip()
+    return override.rstrip("/") if override else _derive_sdl_xdr_url(cfg.get("console_url") or "")
 
 
 def _s1_err(status, body) -> str:
@@ -1039,13 +1066,13 @@ def _deploy_ha(console: str, token: str, site: dict, obj: DeployObject) -> dict:
 
 
 def _deploy_dashboard(cfg: dict, obj: DeployObject) -> dict:
-    sdl_url = cfg.get("sdl_xdr_url")
-    sdl_key = cfg.get("sdl_write_key")
-    if not sdl_url or not sdl_key:
+    sdl_url = _resolve_sdl_url(cfg)
+    if not sdl_url:
         return {"key": obj.key, "type": "dashboard", "status": "skipped",
-                "message": "SDL config write key not provided"}
+                "message": "could not determine your SDL region — set the SDL XDR URL in Configure"}
     content = obj.payload if isinstance(obj.payload, str) else json.dumps(obj.payload)
-    st, body = _sdl_request(sdl_url.rstrip("/"), sdl_key, "/api/putFile",
+    # The console service-user token doubles as the SDL Bearer (Mgmt Z SP5+).
+    st, body = _sdl_request(sdl_url, cfg["api_token"], "/api/putFile",
                             {"path": f"/dashboards/{obj.key}", "content": content})
     ok = st == 200 and isinstance(body, dict) and str(body.get("status", "")).startswith("success")
     if ok:
@@ -1097,13 +1124,18 @@ def deploy_validate(request: Request):
     caps["ha"] = st == 200
     if st != 200:
         messages.append(f"hyperautomation probe returned HTTP {st}")
-    if cfg.get("sdl_xdr_url") and cfg.get("sdl_write_key"):
-        st, body = _sdl_request(cfg["sdl_xdr_url"].rstrip("/"), cfg["sdl_write_key"], "/api/listFiles", {})
+    sdl_url = _resolve_sdl_url(cfg)
+    if sdl_url:
+        # The console token itself does SDL config ops — probe with it (no separate key).
+        st, body = _sdl_request(sdl_url, token, "/api/listFiles", {"path": "/dashboards"})
         caps["dashboards"] = st == 200 and isinstance(body, dict) and str(body.get("status", "")).startswith("success")
-        if not caps["dashboards"]:
-            messages.append(f"SDL listFiles probe returned HTTP {st}")
+        if caps["dashboards"]:
+            messages.append(f"SDL region resolved to {sdl_url}")
+        else:
+            messages.append(f"SDL probe ({sdl_url}) returned HTTP {st} — your token needs the "
+                            "SDL Dashboards + SDL Configuration Files permissions, or set the SDL XDR URL manually")
     else:
-        messages.append("SDL config not provided — dashboard deploys will be skipped")
+        messages.append("Could not auto-detect your SDL region — set the SDL XDR URL to deploy dashboards")
     return {"ok": True, "console_url": console, "site": site, "capabilities": caps, "messages": messages}
 
 

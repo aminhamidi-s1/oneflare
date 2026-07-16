@@ -309,13 +309,16 @@ async function decryptField(env, field) {
 // Never includes any token or key material.
 function s1cfgRedacted(row) {
   if (!row) {
-    return { configured: false, console_url: null, has_token: false, has_sdl: false, updated_at: null };
+    return { configured: false, console_url: null, has_token: false, sdl_xdr_url: null, updated_at: null };
   }
   return {
     configured: true,
     console_url: row.console_url || null,
     has_token: !!row.api_token,
-    has_sdl: !!(row.sdl_xdr_url && row.sdl_write_key),
+    // The console/service-user token itself does SDL config ops, so no separate SDL
+    // key is stored — sdl_xdr_url is only an optional region override (non-secret),
+    // returned so the form can prefill it.
+    sdl_xdr_url: row.sdl_xdr_url || null,
     updated_at: row.updated_at || null,
   };
 }

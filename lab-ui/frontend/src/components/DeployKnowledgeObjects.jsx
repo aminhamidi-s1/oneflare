@@ -12,7 +12,7 @@ import { loadHaWorkflowJson } from '../data/haPlaybooks.js'
 // Hyperautomation workflows, dashboards — see src/data/knowledgeObjects.js)
 // to a signed-in user's OWN SentinelOne console via the session-gated
 // /api/deploy/* backend contract:
-//   GET    /api/deploy/config    -> {configured, console_url, has_token, has_sdl, updated_at}
+//   GET    /api/deploy/config    -> {configured, console_url, has_token, sdl_xdr_url, updated_at}
 //   POST   /api/deploy/config    -> same shape (secrets write-only, never echoed back)
 //   DELETE /api/deploy/config    -> {ok, deleted}
 //   POST   /api/deploy/validate  -> {ok, console_url, site, capabilities, messages}
@@ -145,12 +145,12 @@ function ConnectedBanner({ config, onRevalidate, onEdit, onDisconnect, disconnec
             <span className="flex items-center gap-1.5">
               <KeyRound className="w-3 h-3" /> API token stored
             </span>
-            <span className="flex items-center gap-1.5">
-              {config.has_sdl
-                ? <CheckCircle2 className="w-3 h-3 text-green-400" />
-                : <XCircle className="w-3 h-3 text-slate-600" />}
-              SDL dashboard credentials {config.has_sdl ? 'stored' : 'not set'}
-            </span>
+            {config.sdl_xdr_url && (
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 className="w-3 h-3 text-green-400" />
+                SDL region override: <span className="font-mono">{hostOf(config.sdl_xdr_url)}</span>
+              </span>
+            )}
             {config.updated_at && <span className="text-slate-600">Updated {formatTime(config.updated_at)}</span>}
           </div>
         </div>
@@ -179,7 +179,6 @@ function ConfigForm({
   consoleUrl, setConsoleUrl,
   apiToken, setApiToken,
   sdlXdrUrl, setSdlXdrUrl,
-  sdlWriteKey, setSdlWriteKey,
   saveError, onSubmit,
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -188,11 +187,21 @@ function ConfigForm({
     <form id="deploy-config-form" onSubmit={onSubmit} className="space-y-4">
       <div className="rounded-lg border border-[#2d1b4e] bg-white/[0.02] p-3 flex gap-2.5">
         <Info className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
-        <p className="text-xs text-slate-400 leading-relaxed">
-          In your SentinelOne console: <strong className="text-slate-300">Settings → Users → Service Users → Create New Service User</strong> (or pick an existing one),
-          give it a role with <strong className="text-slate-300">Cloud Detection</strong> and <strong className="text-slate-300">Hyperautomation</strong> permissions scoped to your site, then copy its API token.
-          A scoped service-user token is recommended over a personal one. The token is stored securely server-side and is never shown back to you or anyone else.
-        </p>
+        <div className="text-xs text-slate-400 leading-relaxed space-y-1.5">
+          <p>
+            In your SentinelOne console: <strong className="text-slate-300">Settings → Users → Service Users → Create New Service User</strong> (or
+            pick an existing one) and give its role these permissions, scoped to your site:
+          </p>
+          <ul className="space-y-0.5 pl-0.5">
+            <li><span className="text-slate-300 font-semibold">STAR Custom Rules</span> — deploy detections</li>
+            <li><span className="text-slate-300 font-semibold">Hyperautomation</span> — import &amp; activate workflows</li>
+            <li><span className="text-slate-300 font-semibold">SDL Dashboards</span> + <span className="text-slate-300 font-semibold">SDL Configuration Files</span> — deploy dashboards <span className="text-slate-500">(optional)</span></li>
+          </ul>
+          <p>
+            Then copy its API token. <strong className="text-slate-300">One service-user token covers all three</strong> — it also does SDL config, so no
+            separate SDL key is needed. The token is stored securely server-side and is never shown back to you or anyone else.
+          </p>
+        </div>
       </div>
 
       <div>
@@ -226,33 +235,28 @@ function ConfigForm({
           onClick={() => setShowAdvanced((v) => !v)}
           className="collapsible-header w-full text-left"
         >
-          <span className="text-xs font-semibold text-slate-300">Advanced — SDL dashboard credentials (optional)</span>
+          <span className="text-xs font-semibold text-slate-300">Advanced — SDL dashboard region (optional)</span>
           {showAdvanced ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
         </button>
         {showAdvanced && (
           <div className="collapsible-body space-y-3">
             <p className="text-xs text-slate-500 leading-relaxed">
-              Only needed to deploy SDL dashboards. Detections and Hyperautomation workflows work without these.
+              Dashboards deploy with the <span className="text-slate-400">same service-user token</span> — no separate key. We auto-detect your SDL
+              region from the Console URL, so leave this blank unless auto-detection fails.
             </p>
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">SDL XDR URL</label>
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">SDL XDR URL <span className="text-slate-600 normal-case font-normal">— override</span></label>
               <input
                 type="url"
                 value={sdlXdrUrl}
                 onChange={(e) => setSdlXdrUrl(e.target.value)}
-                placeholder="https://xdr.us1.sentinelone.net"
+                placeholder="auto-detected · e.g. https://xdr.us1.sentinelone.net"
                 className="w-full rounded-lg bg-[#12081f] border border-[#2d1b4e] px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-orange-500/50"
               />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">SDL Config Write Key</label>
-              <input
-                type="password"
-                value={sdlWriteKey}
-                onChange={(e) => setSdlWriteKey(e.target.value)}
-                placeholder="•••••••• (leave blank to keep current key)"
-                className="w-full rounded-lg bg-[#12081f] border border-[#2d1b4e] px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-orange-500/50"
-              />
+              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                Your SDL/XDR host — the address of your Singularity Data Lake console (e.g. <span className="font-mono">xdr.us1.sentinelone.net</span>),
+                also listed under SentinelOne's “Endpoint URLs by Region.”
+              </p>
             </div>
           </div>
         )}
@@ -416,7 +420,7 @@ function GroupSection({ group, capabilities, selected, onToggleItem, onToggleGro
           <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 shrink-0 mt-0.5" />
           <p className="text-xs text-yellow-400/80">
             {group.type === 'dashboard'
-              ? 'Add SDL credentials in Configure to enable dashboards.'
+              ? 'Set the SDL XDR URL in Configure (or grant your token SDL Dashboards + SDL Configuration Files) to enable dashboards.'
               : `This console did not report the "${CAP_KEY[group.type]}" capability as available.`}
           </p>
         </div>
@@ -512,7 +516,6 @@ export default function DeployKnowledgeObjects() {
   const [consoleUrlInput, setConsoleUrlInput] = useState('')
   const [apiTokenInput, setApiTokenInput] = useState('')
   const [sdlXdrUrlInput, setSdlXdrUrlInput] = useState('')
-  const [sdlWriteKeyInput, setSdlWriteKeyInput] = useState('')
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -547,7 +550,6 @@ export default function DeployKnowledgeObjects() {
     setConfigError('')
     setApiTokenInput('')
     setSdlXdrUrlInput('')
-    setSdlWriteKeyInput('')
     setSaveError('')
     setValidateResult(null)
     setValidateError('')
@@ -588,6 +590,7 @@ export default function DeployKnowledgeObjects() {
       }
       setConfig(data)
       setConsoleUrlInput(data.console_url || '')
+      setSdlXdrUrlInput(data.sdl_xdr_url || '')
     } catch {
       setConfigError('Could not reach backend.')
     } finally {
@@ -609,10 +612,8 @@ export default function DeployKnowledgeObjects() {
     setSaving(true)
     try {
       const body = { console_url: url, api_token: token || (isEdit ? null : undefined) }
-      const xdr = sdlXdrUrlInput.trim()
-      const key = sdlWriteKeyInput.trim()
-      if (xdr) body.sdl_xdr_url = xdr
-      if (key) body.sdl_write_key = key
+      // SDL XDR URL is an optional region override; empty string clears it.
+      body.sdl_xdr_url = sdlXdrUrlInput.trim()
       const res = await fetch('/api/deploy/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -627,8 +628,7 @@ export default function DeployKnowledgeObjects() {
       setConfig(data)
       setEditing(false)
       setApiTokenInput('')
-      setSdlWriteKeyInput('')
-      goToValidate()
+        goToValidate()
     } catch {
       setSaveError('Could not reach backend.')
     } finally {
@@ -821,7 +821,6 @@ export default function DeployKnowledgeObjects() {
                     consoleUrl={consoleUrlInput} setConsoleUrl={setConsoleUrlInput}
                     apiToken={apiTokenInput} setApiToken={setApiTokenInput}
                     sdlXdrUrl={sdlXdrUrlInput} setSdlXdrUrl={setSdlXdrUrlInput}
-                    sdlWriteKey={sdlWriteKeyInput} setSdlWriteKey={setSdlWriteKeyInput}
                     saveError={saveError}
                     onSubmit={handleSaveConfig}
                   />
