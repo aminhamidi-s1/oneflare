@@ -2,7 +2,7 @@ import Navbar from './Navbar.jsx'
 
 export default function Layout({ children }) {
   return (
-    <div className="min-h-screen flex flex-col" style={{ backgroundColor: '#0d0620' }}>
+    <div className="min-h-screen flex flex-col" style={{ backgroundColor: 'var(--bg-base)' }}>
       {/* Circuit board background - covers the whole page */}
       <div
         className="fixed inset-0 pointer-events-none z-0"

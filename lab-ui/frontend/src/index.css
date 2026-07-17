@@ -4,15 +4,57 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Design tokens ────────────────────────────────────────────────────────
+   Dark is the default/original palette (unchanged values → dark mode stays
+   pixel-identical). `:root[data-theme="light"]` remaps every token; the
+   handful of custom component classes below consume these vars, so they
+   re-theme for free. Hardcoded utility classes in JSX (bg-[#...], slate-*,
+   colored badges, etc.) can't consume CSS vars — those are handled by the
+   attribute-selector override block further down. */
 :root {
   --bg-base: #0d0620;
   --bg-card: #1a0a2e;
   --bg-elevated: #1f0d38;
+  --bg-code: #0a0a14;
   --border: #2d1b4e;
+  --border-2: #1e1235;
+  --border-hover: #4a3560;
   --accent-orange: #f38020;
   --accent-purple: #a855f7;
   --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
+  --code-text: #e2e8f0;
+  --input-bg: #0f0620;
+  --input-placeholder: #4a3560;
+  --hover-overlay: rgba(255, 255, 255, 0.05);
+  --nav-bg: rgba(13, 6, 32, 0.75);
+  --nav-border: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: #4a2d7a;
+  --shadow-card: none;
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="light"] {
+  --bg-base: #f5f3fb;
+  --bg-card: #ffffff;
+  --bg-elevated: #faf9ff;
+  --bg-code: #f4f1fa;
+  --border: #e3ddf0;
+  --border-2: #ece7f7;
+  --border-hover: #cabfe0;
+  --accent-orange: #ea6c0e;
+  --accent-purple: #9333ea;
+  --text-primary: #1c1830;
+  --text-secondary: #524c6e;
+  --code-text: #2c2646;
+  --input-bg: #ffffff;
+  --input-placeholder: #9891b3;
+  --hover-overlay: rgba(28, 17, 56, 0.045);
+  --nav-bg: rgba(255, 255, 255, 0.85);
+  --nav-border: #e7e2f2;
+  --scrollbar-thumb-hover: #b6abd6;
+  --shadow-card: 0 1px 2px rgba(76, 60, 120, 0.06), 0 6px 20px rgba(76, 60, 120, 0.08);
+  --shadow-modal: 0 20px 60px rgba(76, 60, 120, 0.25);
 }
 
 * {
@@ -20,44 +62,6 @@
   margin: 0;
   padding: 0;
 }
-
-/* ── Light mode ──────────────────────────────────────────────────────────────
-   The UI is dark-first with hardcoded hex/slate utilities. Rather than rewrite
-   every component, we remap the app's palette when <html data-theme="light">.
-   Attribute selectors ([class*="…"]) catch opacity variants (e.g. /50) too. */
-html[data-theme="light"] body {
-  background-color: #f4f2fb;
-  color: #1c1830;
-}
-html[data-theme="light"] ::-webkit-scrollbar-track { background: #e9e5f5; }
-html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #cfc7e6; }
-html[data-theme="light"] ::selection { background: rgba(168, 85, 247, 0.18); color: #1c1830; }
-
-/* Panel / surface backgrounds */
-html[data-theme="light"] [class*="bg-[#0d0620]"],
-html[data-theme="light"] [class*="bg-[#0a0a14]"] { background-color: #eceaf6 !important; }
-html[data-theme="light"] [class*="bg-[#1a0a2e]"] { background-color: #ffffff !important; }
-html[data-theme="light"] [class*="bg-[#1f0d38]"] { background-color: #f6f4fc !important; }
-html[data-theme="light"] [class*="bg-[#12081f]"] { background-color: #f1eefb !important; }
-/* white overlays are invisible on a light bg → subtle dark tint instead */
-html[data-theme="light"] [class*="bg-white/"] { background-color: rgba(24, 16, 46, 0.04) !important; }
-
-/* Borders */
-html[data-theme="light"] [class*="border-[#2d1b4e]"] { border-color: #e2ddf1 !important; }
-html[data-theme="light"] [class*="border-[#1e1235]"] { border-color: #ece8f6 !important; }
-html[data-theme="light"] [class*="border-[#3a2465]"] { border-color: #d9d2ec !important; }
-
-/* Text (slate ramp → dark-on-light) */
-html[data-theme="light"] .text-white,
-html[data-theme="light"] .text-slate-100,
-html[data-theme="light"] .text-slate-200 { color: #1c1830 !important; }
-html[data-theme="light"] .text-slate-300 { color: #2c2646 !important; }
-html[data-theme="light"] .text-slate-400 { color: #4c4666 !important; }
-html[data-theme="light"] .text-slate-500 { color: #6a6485 !important; }
-html[data-theme="light"] .text-slate-600 { color: #8b85a2 !important; }
-
-/* Connector lines / gradients that assumed a dark canvas */
-html[data-theme="light"] [class*="from-[#3a2465]"] { --tw-gradient-from: #d9d2ec !important; }
 
 html {
   scroll-behavior: smooth;
@@ -77,17 +81,17 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0d0620;
+  background: var(--bg-base);
 }
 ::-webkit-scrollbar-thumb {
-  background: #2d1b4e;
+  background: var(--border);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4a2d7a;
+  background: var(--scrollbar-thumb-hover);
 }
 
-/* Terminal scrollbar */
+/* Terminal scrollbar — terminals stay dark in both themes by design */
 .terminal-scroll::-webkit-scrollbar {
   width: 4px;
 }
@@ -113,6 +117,10 @@ body {
   background: rgba(168, 85, 247, 0.3);
   color: #f8fafc;
 }
+html[data-theme="light"] ::selection {
+  background: rgba(147, 51, 234, 0.18);
+  color: #1c1830;
+}
 
 /* Glow effects */
 .glow-orange {
@@ -121,11 +129,17 @@ body {
 .glow-purple {
   box-shadow: 0 0 20px rgba(168, 85, 247, 0.3), 0 0 40px rgba(168, 85, 247, 0.1);
 }
+html[data-theme="light"] .glow-orange {
+  box-shadow: 0 0 16px rgba(234, 108, 14, 0.18), 0 0 32px rgba(234, 108, 14, 0.08);
+}
+html[data-theme="light"] .glow-purple {
+  box-shadow: 0 0 16px rgba(147, 51, 234, 0.16), 0 0 32px rgba(147, 51, 234, 0.07);
+}
 
 /* Card hover glow */
 .card-hover-orange {
   transition: all 0.3s ease;
-  border: 1px solid #2d1b4e;
+  border: 1px solid var(--border);
 }
 .card-hover-orange:hover {
   border-color: rgba(243, 128, 32, 0.5);
@@ -135,7 +149,7 @@ body {
 
 .card-hover-purple {
   transition: all 0.3s ease;
-  border: 1px solid #2d1b4e;
+  border: 1px solid var(--border);
 }
 .card-hover-purple:hover {
   border-color: rgba(168, 85, 247, 0.5);
@@ -147,8 +161,11 @@ body {
 .glass-nav {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  background: rgba(13, 6, 32, 0.75);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--nav-bg);
+  border-bottom: 1px solid var(--nav-border);
+}
+html[data-theme="light"] .glass-nav {
+  box-shadow: 0 1px 0 rgba(76, 60, 120, 0.04), 0 2px 12px rgba(76, 60, 120, 0.05);
 }
 
 /* Circuit board SVG background */
@@ -171,12 +188,12 @@ body {
   font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
   font-size: 0.8125rem;
   line-height: 1.6;
-  background: #0a0a14;
-  border: 1px solid #1e1235;
+  background: var(--bg-code);
+  border: 1px solid var(--border-2);
   border-radius: 8px;
   padding: 1rem;
   overflow-x: auto;
-  color: #e2e8f0;
+  color: var(--code-text);
 }
 
 /* Gradient text */
@@ -186,11 +203,20 @@ body {
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
-
 .gradient-text-purple {
   background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+html[data-theme="light"] .gradient-text-orange {
+  background: linear-gradient(135deg, #c2410c 0%, #ea580c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+html[data-theme="light"] .gradient-text-purple {
+  background: linear-gradient(135deg, #7e22ce 0%, #9333ea 100%);
+  -webkit-background-clip: text;
   background-clip: text;
 }
 
@@ -219,7 +245,9 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Hero gradient */
+/* Hero gradient — a deliberately dark, branded banner in BOTH themes (see
+   `.hero-dark` scoping rules below, which keep its children's light-on-dark
+   text legible instead of being caught by the page-wide light overrides). */
 .hero-gradient {
   background: linear-gradient(135deg,
     #0d0620 0%,
@@ -253,14 +281,15 @@ body {
 
 /* Stat card */
 .stat-card {
-  background: linear-gradient(135deg, #1a0a2e 0%, #1f0d38 100%);
-  border: 1px solid #2d1b4e;
+  background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-elevated) 100%);
+  border: 1px solid var(--border);
   border-radius: 12px;
   transition: all 0.3s ease;
+  box-shadow: var(--shadow-card);
 }
 .stat-card:hover {
   border-color: rgba(243, 128, 32, 0.3);
-  box-shadow: 0 4px 20px rgba(243, 128, 32, 0.08);
+  box-shadow: var(--shadow-card), 0 4px 20px rgba(243, 128, 32, 0.08);
 }
 
 /* Number badge */
@@ -274,17 +303,17 @@ body {
 /* Step connector */
 .step-connector {
   width: 2px;
-  background: linear-gradient(to bottom, #2d1b4e, rgba(45,27,78,0));
+  background: linear-gradient(to bottom, var(--border), rgba(45,27,78,0));
   margin: 4px auto;
   flex-shrink: 0;
 }
 
 /* Input styles */
 .lab-input {
-  background: #0f0620;
-  border: 1px solid #2d1b4e;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: #f8fafc;
+  color: var(--text-primary);
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
   transition: all 0.2s ease;
@@ -297,12 +326,14 @@ body {
   box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.1);
 }
 .lab-input::placeholder {
-  color: #4a3560;
+  color: var(--input-placeholder);
 }
 
 /* Button base */
 /* .btn-primary is an alias for the app's one primary (orange) button style —
-   several pages reference it as the semantic "primary action" class. */
+   several pages reference it as the semantic "primary action" class. These
+   are brand-colored, self-contained buttons and intentionally do not change
+   between themes. */
 .btn-orange,
 .btn-primary {
   background: linear-gradient(135deg, #f38020 0%, #e07318 100%);
@@ -359,8 +390,8 @@ body {
 
 .btn-ghost {
   background: transparent;
-  color: #94a3b8;
-  border: 1px solid #2d1b4e;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.5rem 1rem;
   font-weight: 500;
@@ -372,9 +403,9 @@ body {
   gap: 0.5rem;
 }
 .btn-ghost:hover {
-  background: rgba(255,255,255,0.05);
-  color: #f8fafc;
-  border-color: #4a3560;
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
 }
 
 /* Tooltip */
@@ -387,21 +418,22 @@ body {
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  background: #1f0d38;
-  border: 1px solid #2d1b4e;
-  color: #f8fafc;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 0.75rem;
   white-space: nowrap;
   z-index: 100;
   pointer-events: none;
+  box-shadow: var(--shadow-card);
 }
 
 /* Flowchart step */
 .playbook-step {
   background: linear-gradient(135deg, rgba(26,10,46,0.8) 0%, rgba(31,13,56,0.8) 100%);
-  border: 1px solid #2d1b4e;
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.875rem 1rem;
   transition: all 0.2s ease;
@@ -410,16 +442,24 @@ body {
   border-color: rgba(243, 128, 32, 0.4);
   background: linear-gradient(135deg, rgba(31,13,56,0.9) 0%, rgba(38,16,68,0.9) 100%);
 }
+html[data-theme="light"] .playbook-step {
+  background: linear-gradient(135deg, #ffffff 0%, #faf8ff 100%);
+  box-shadow: var(--shadow-card);
+}
+html[data-theme="light"] .playbook-step:hover {
+  border-color: rgba(234, 108, 14, 0.35);
+  background: linear-gradient(135deg, #fffaf5 0%, #fff3e8 100%);
+}
 
 /* Collapsible section */
 .collapsible-section {
-  border: 1px solid #2d1b4e;
+  border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
   transition: all 0.2s ease;
 }
 .collapsible-header {
-  background: linear-gradient(135deg, #1a0a2e 0%, #1f0d38 100%);
+  background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-elevated) 100%);
   padding: 1rem 1.25rem;
   cursor: pointer;
   display: flex;
@@ -430,10 +470,16 @@ body {
 .collapsible-header:hover {
   background: linear-gradient(135deg, #1f0d38 0%, #250f42 100%);
 }
+html[data-theme="light"] .collapsible-header:hover {
+  background: linear-gradient(135deg, #faf9ff 0%, #f3edfc 100%);
+}
 .collapsible-body {
   background: rgba(13,6,32,0.5);
   padding: 1.25rem;
-  border-top: 1px solid #2d1b4e;
+  border-top: 1px solid var(--border);
+}
+html[data-theme="light"] .collapsible-body {
+  background: #fbfaff;
 }
 
 /* Range slider */
@@ -441,7 +487,7 @@ input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   height: 4px;
-  background: #2d1b4e;
+  background: var(--border);
   border-radius: 2px;
   outline: none;
   width: 100%;
@@ -462,7 +508,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.15);
 }
 
-/* Modal backdrop */
+/* Modal backdrop — a dimming scrim reads correctly over either theme */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -474,9 +520,12 @@ input[type="range"]::-webkit-slider-thumb:hover {
   justify-content: center;
   animation: fadeIn 0.2s ease;
 }
+html[data-theme="light"] .modal-backdrop {
+  background: rgba(28, 17, 56, 0.35);
+}
 .modal-content {
-  background: #1a0a2e;
-  border: 1px solid #2d1b4e;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 16px;
   max-width: 800px;
   width: 90vw;
@@ -485,4 +534,109 @@ input[type="range"]::-webkit-slider-thumb:hover {
   display: flex;
   flex-direction: column;
   animation: slideUp 0.25s ease;
+  box-shadow: var(--shadow-modal);
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   LIGHT MODE — comprehensive override layer
+   The app is dark-first: components hardcode dark hex values, the Tailwind
+   slate ramp, and light-pastel color-hue utilities (text-orange-400, etc.)
+   meant to sit on a dark canvas. Rather than rewrite every component, this
+   block remaps that palette wholesale via attribute selectors ([class*="…"]
+   also catches opacity variants like /50) whenever <html data-theme="light">.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Panel / surface backgrounds ── */
+html[data-theme="light"] [class*="bg-[#0d0620]"],
+html[data-theme="light"] [class*="bg-[#0a0a14]"] { background-color: #eeeaf7 !important; }
+html[data-theme="light"] [class*="bg-[#1a0a2e]"] { background-color: #ffffff !important; box-shadow: var(--shadow-card); }
+html[data-theme="light"] [class*="bg-[#1f0d38]"] { background-color: #faf9ff !important; }
+html[data-theme="light"] [class*="bg-[#12081f]"] { background-color: #f2eff9 !important; }
+html[data-theme="light"] [class*="bg-[#2d1b4e]"] { background-color: #e9e4f5 !important; }
+html[data-theme="light"] [class*="bg-[#3a2465]"] { background-color: #ded5ef !important; }
+/* white overlays are invisible on a light bg → subtle dark tint instead */
+html[data-theme="light"] [class*="bg-white/"] { background-color: rgba(28, 17, 56, 0.045) !important; }
+html[data-theme="light"] [class*="border-white/"] { border-color: rgba(28, 17, 56, 0.12) !important; }
+html[data-theme="light"] [class*="divide-white/"] { border-color: rgba(28, 17, 56, 0.08) !important; }
+
+/* ── Borders ── */
+html[data-theme="light"] [class*="border-[#2d1b4e]"] { border-color: #e2ddf1 !important; }
+html[data-theme="light"] [class*="border-[#1e1235]"] { border-color: #ece8f6 !important; }
+html[data-theme="light"] [class*="border-[#3a2465]"] { border-color: #d3c9e8 !important; }
+html[data-theme="light"] [class*="divide-[#1e1235]"] { border-color: #ece8f6 !important; }
+html[data-theme="light"] [class*="from-[#2d1b4e]"] { --tw-gradient-from: #d9d2ec !important; }
+
+/* ── Neutral (slate) ramp → dark-on-light ── */
+html[data-theme="light"] [class*="text-white"],
+html[data-theme="light"] [class*="text-slate-100"],
+html[data-theme="light"] [class*="text-slate-200"] { color: #1c1830 !important; }
+html[data-theme="light"] [class*="text-slate-300"] { color: #322b52 !important; }
+html[data-theme="light"] [class*="text-slate-400"] { color: #55507a !important; }
+html[data-theme="light"] [class*="text-slate-500"] { color: #6f6a94 !important; }
+html[data-theme="light"] [class*="text-slate-600"] { color: #8783a6 !important; }
+
+/* slate-700/800 are structural dark-canvas borders/fills → light equivalents */
+html[data-theme="light"] [class*="border-slate-700"] { border-color: #e4dff1 !important; }
+html[data-theme="light"] [class*="border-slate-600"] { border-color: #d7cfe9 !important; }
+html[data-theme="light"] [class*="border-slate-500"] { border-color: #cabfdf !important; }
+html[data-theme="light"] [class*="border-slate-400"] { border-color: #b8abd6 !important; }
+html[data-theme="light"] [class*="bg-slate-800"] { background-color: #f0edf9 !important; }
+
+/* ── Color-hue text (badges, icons, active-nav accents): the app uses the
+   light/pastel -300/-400 shades meant for a dark canvas → darken to a
+   readable -700-ish shade so they hold contrast on light surfaces. ── */
+html[data-theme="light"] [class*="text-red-200"],
+html[data-theme="light"] [class*="text-red-300"],
+html[data-theme="light"] [class*="text-red-400"] { color: #b91c1c !important; }
+html[data-theme="light"] [class*="text-orange-200"],
+html[data-theme="light"] [class*="text-orange-300"],
+html[data-theme="light"] [class*="text-orange-400"],
+html[data-theme="light"] [class*="text-orange-500"] { color: #c2410c !important; }
+html[data-theme="light"] [class*="text-amber-200"],
+html[data-theme="light"] [class*="text-amber-300"],
+html[data-theme="light"] [class*="text-amber-400"] { color: #b45309 !important; }
+html[data-theme="light"] [class*="text-yellow-200"],
+html[data-theme="light"] [class*="text-yellow-300"],
+html[data-theme="light"] [class*="text-yellow-400"],
+html[data-theme="light"] [class*="text-yellow-500"] { color: #a16207 !important; }
+html[data-theme="light"] [class*="text-green-300"],
+html[data-theme="light"] [class*="text-green-400"] { color: #15803d !important; }
+html[data-theme="light"] [class*="text-cyan-200"],
+html[data-theme="light"] [class*="text-cyan-400"] { color: #0e7490 !important; }
+html[data-theme="light"] [class*="text-blue-200"],
+html[data-theme="light"] [class*="text-blue-300"],
+html[data-theme="light"] [class*="text-blue-400"] { color: #1d4ed8 !important; }
+html[data-theme="light"] [class*="text-purple-200"],
+html[data-theme="light"] [class*="text-purple-300"],
+html[data-theme="light"] [class*="text-purple-400"],
+html[data-theme="light"] [class*="text-purple-500"] { color: #7e22ce !important; }
+html[data-theme="light"] [class*="text-pink-400"] { color: #be185d !important; }
+
+/* ── Dark "-900/40 wash + -800 border" status pills (ThreatOps evidence
+   badges) → light tint equivalents ── */
+html[data-theme="light"] [class*="bg-blue-900"] { background-color: #dbeafe !important; }
+html[data-theme="light"] [class*="border-blue-800"] { border-color: #93c5fd !important; }
+html[data-theme="light"] [class*="bg-orange-900"] { background-color: #ffedd5 !important; }
+html[data-theme="light"] [class*="border-orange-800"] { border-color: #fdba74 !important; }
+html[data-theme="light"] [class*="bg-purple-900"] { background-color: #f3e8ff !important; }
+html[data-theme="light"] [class*="border-purple-800"] { border-color: #d8b4fe !important; }
+html[data-theme="light"] [class*="bg-green-900"] { background-color: #dcfce7 !important; }
+html[data-theme="light"] [class*="border-green-800"] { border-color: #86efac !important; }
+html[data-theme="light"] [class*="bg-yellow-900"] { background-color: #fef9c3 !important; }
+html[data-theme="light"] [class*="border-yellow-800"] { border-color: #fde047 !important; }
+
+/* ── Hero banner scoping ──────────────────────────────────────────────
+   `.hero-dark` marks the Dashboard hero, which stays an intentionally dark,
+   richly-colored brand banner in BOTH themes (matches the co-brand gradient
+   title). Cancel the page-wide light remaps for its children so their
+   light-on-dark text stays legible against the still-dark hero-gradient. */
+html[data-theme="light"] .hero-dark [class*="text-slate-300"] { color: #cbd5e1 !important; }
+html[data-theme="light"] .hero-dark [class*="text-slate-400"] { color: #94a3b8 !important; }
+html[data-theme="light"] .hero-dark [class*="text-slate-500"] { color: #64748b !important; }
+html[data-theme="light"] .hero-dark [class*="text-slate-600"] { color: #475569 !important; }
+html[data-theme="light"] .hero-dark [class*="bg-slate-800"] { background-color: rgba(255,255,255,0.05) !important; }
+html[data-theme="light"] .hero-dark [class*="border-slate-600"] { border-color: rgba(255,255,255,0.12) !important; }
+html[data-theme="light"] .hero-dark [class*="text-orange-400"] { color: #fb923c !important; }
+html[data-theme="light"] .hero-dark [class*="text-purple-400"] { color: #c084fc !important; }
+html[data-theme="light"] .hero-dark [class*="text-yellow-400"] { color: #fbbf24 !important; }
+html[data-theme="light"] .hero-dark [class*="text-green-400"] { color: #4ade80 !important; }
