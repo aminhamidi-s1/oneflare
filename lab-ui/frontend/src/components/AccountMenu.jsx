@@ -8,8 +8,9 @@
 // discreet footer link in Settings.
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CircleUser, LogOut, ShieldCheck, RefreshCw, X, UserPlus } from 'lucide-react'
+import { CircleUser, LogOut, ShieldCheck, RefreshCw, X, UserPlus, Sun, Moon } from 'lucide-react'
 import { getMe } from '../lib/session'
+import { getTheme, setTheme } from '../lib/theme'
 import RequestAccountForm from './RequestAccountForm'
 
 function RoleBadge({ role }) {
@@ -103,6 +104,8 @@ export default function AccountMenu() {
   const [loaded, setLoaded] = useState(false)
   const [showSwitch, setShowSwitch] = useState(false)
   const [showRequest, setShowRequest] = useState(false)
+  const [theme, setThemeState] = useState(getTheme())
+  const changeTheme = (t) => setThemeState(setTheme(t))
 
   const load = useCallback(async () => {
     const [meData, cfg] = await Promise.all([
@@ -268,6 +271,31 @@ export default function AccountMenu() {
               </div>
             </>
           )}
+
+          {/* Preferences — theme toggle (shared across auth states) */}
+          <div className="mt-2 pt-2 border-t border-[#2d1b4e]">
+            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-1 mb-1.5">Preferences</p>
+            <div className="flex items-center justify-between px-2 py-1 text-sm text-slate-300">
+              <span className="flex items-center gap-2">
+                {theme === 'light' ? <Sun className="w-3.5 h-3.5 shrink-0" /> : <Moon className="w-3.5 h-3.5 shrink-0" />}
+                Theme
+              </span>
+              <div className="flex items-center rounded-lg border border-[#2d1b4e] overflow-hidden">
+                <button
+                  onClick={() => changeTheme('dark')}
+                  className={`px-2.5 py-1 text-xs transition-colors ${theme === 'dark' ? 'bg-orange-500/15 text-orange-400' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  Dark
+                </button>
+                <button
+                  onClick={() => changeTheme('light')}
+                  className={`px-2.5 py-1 text-xs transition-colors ${theme === 'light' ? 'bg-orange-500/15 text-orange-400' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  Light
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -21,6 +21,44 @@
   padding: 0;
 }
 
+/* ── Light mode ──────────────────────────────────────────────────────────────
+   The UI is dark-first with hardcoded hex/slate utilities. Rather than rewrite
+   every component, we remap the app's palette when <html data-theme="light">.
+   Attribute selectors ([class*="…"]) catch opacity variants (e.g. /50) too. */
+html[data-theme="light"] body {
+  background-color: #f4f2fb;
+  color: #1c1830;
+}
+html[data-theme="light"] ::-webkit-scrollbar-track { background: #e9e5f5; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #cfc7e6; }
+html[data-theme="light"] ::selection { background: rgba(168, 85, 247, 0.18); color: #1c1830; }
+
+/* Panel / surface backgrounds */
+html[data-theme="light"] [class*="bg-[#0d0620]"],
+html[data-theme="light"] [class*="bg-[#0a0a14]"] { background-color: #eceaf6 !important; }
+html[data-theme="light"] [class*="bg-[#1a0a2e]"] { background-color: #ffffff !important; }
+html[data-theme="light"] [class*="bg-[#1f0d38]"] { background-color: #f6f4fc !important; }
+html[data-theme="light"] [class*="bg-[#12081f]"] { background-color: #f1eefb !important; }
+/* white overlays are invisible on a light bg → subtle dark tint instead */
+html[data-theme="light"] [class*="bg-white/"] { background-color: rgba(24, 16, 46, 0.04) !important; }
+
+/* Borders */
+html[data-theme="light"] [class*="border-[#2d1b4e]"] { border-color: #e2ddf1 !important; }
+html[data-theme="light"] [class*="border-[#1e1235]"] { border-color: #ece8f6 !important; }
+html[data-theme="light"] [class*="border-[#3a2465]"] { border-color: #d9d2ec !important; }
+
+/* Text (slate ramp → dark-on-light) */
+html[data-theme="light"] .text-white,
+html[data-theme="light"] .text-slate-100,
+html[data-theme="light"] .text-slate-200 { color: #1c1830 !important; }
+html[data-theme="light"] .text-slate-300 { color: #2c2646 !important; }
+html[data-theme="light"] .text-slate-400 { color: #4c4666 !important; }
+html[data-theme="light"] .text-slate-500 { color: #6a6485 !important; }
+html[data-theme="light"] .text-slate-600 { color: #8b85a2 !important; }
+
+/* Connector lines / gradients that assumed a dark canvas */
+html[data-theme="light"] [class*="from-[#3a2465]"] { --tw-gradient-from: #d9d2ec !important; }
+
 html {
   scroll-behavior: smooth;
 }
