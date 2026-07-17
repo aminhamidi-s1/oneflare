@@ -4,7 +4,7 @@ import {
   ShieldCheck, RefreshCw, Users, History as HistoryIcon,
   Power, PowerOff, Trash2, Lock, PlugZap, AlertTriangle, Clock,
   LogOut, UserPlus, Copy, Check, Mail, KeyRound, UserCheck, X,
-  CheckCircle2, XCircle, Circle,
+  CheckCircle2, XCircle, Circle, ChevronRight, ChevronDown,
 } from 'lucide-react'
 import RequestAccountForm from '../components/RequestAccountForm'
 
@@ -411,8 +411,12 @@ function auditDetails(entry) {
     case 'forward_error':
       return [entry.status ? `HTTP ${entry.status}` : null, entry.error].filter(Boolean).join(' — ') || '—'
     case 'dropped_unknown_host': {
-      const hosts = entry.hosts && typeof entry.hosts === 'object' ? Object.keys(entry.hosts) : []
-      return hosts.length ? `${hosts.length} unknown host(s): ${hosts.slice(0, 3).join(', ')}${hosts.length > 3 ? '…' : ''}` : '—'
+      const h = entry.hosts && typeof entry.hosts === 'object' ? entry.hosts : {}
+      const names = Object.keys(h)
+      const records = Object.values(h).reduce((a, b) => a + (Number(b) || 0), 0)
+      return names.length
+        ? `${records || names.length} record(s) dropped from ${names.length} unregistered host(s): ${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`
+        : '—'
     }
     case 'register':
     case 're-register':
@@ -448,10 +452,30 @@ function auditDetails(entry) {
   }
 }
 
-const AUDIT_GRID_COLS = 'grid-cols-[9rem_13rem_11rem_7rem_1fr]'
+const AUDIT_GRID_COLS = 'grid-cols-[1.5rem_9rem_13rem_11rem_7rem_1fr]'
+
+// Grouping signature: adjacent entries with the same signature collapse into one
+// row (so per-batch operational noise like unknown-host drops / forward errors
+// doesn't flood the log). Signature = type + actor + the primary detail.
+function auditSignature(entry) {
+  const t = entry.type || ''
+  if (t === 'dropped_unknown_host') {
+    const hosts = entry.hosts && typeof entry.hosts === 'object' ? Object.keys(entry.hosts).sort().join(',') : ''
+    return `dropped_unknown_host|${hosts}`
+  }
+  if (t === 'forward_error') return `forward_error|${entry.subdomain || ''}|${entry.status || ''}`
+  const actor = entry.email || entry.owner || entry.actor || entry.by || ''
+  return `${t}|${actor}|${auditDetails(entry)}`
+}
 
 function HistoryTable({ history }) {
   const [filter, setFilter] = useState('all')
+  const [expanded, setExpanded] = useState(() => new Set())
+  const toggle = (id) => setExpanded((prev) => {
+    const next = new Set(prev)
+    next.has(id) ? next.delete(id) : next.add(id)
+    return next
+  })
 
   // Newest first
   const sorted = [...history].sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0))
@@ -460,6 +484,15 @@ function HistoryTable({ history }) {
     return acc
   }, {})
   const filtered = filter === 'all' ? sorted : sorted.filter((e) => categoryOf(e.type) === filter)
+
+  // Fold ADJACENT same-signature entries into groups (members newest-first).
+  const groups = []
+  for (const entry of filtered) {
+    const sig = auditSignature(entry)
+    const last = groups[groups.length - 1]
+    if (last && last.sig === sig) last.members.push(entry)
+    else groups.push({ sig, members: [entry] })
+  }
 
   return (
     <div className="space-y-3">
@@ -480,7 +513,7 @@ function HistoryTable({ history }) {
         ))}
       </div>
 
-      {filtered.length === 0 ? (
+      {groups.length === 0 ? (
         <div className="rounded-xl border border-[#2d1b4e] bg-[#1a0a2e]/50 p-12 flex flex-col items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center">
             <HistoryIcon className="w-6 h-6 text-slate-500" />
@@ -501,33 +534,62 @@ function HistoryTable({ history }) {
           <div className="overflow-x-auto">
             <div className="min-w-[900px]">
               <div className={`grid ${AUDIT_GRID_COLS} gap-4 px-5 py-3 bg-[#1a0a2e] border-b border-[#2d1b4e] text-xs font-semibold text-slate-500 uppercase tracking-wider`}>
+                <span />
                 <span>Time</span>
                 <span>Event</span>
                 <span>Actor</span>
                 <span>Status</span>
                 <span>Details</span>
               </div>
-              {filtered.map((entry, i) => (
-                <div
-                  key={i}
-                  className={`grid ${AUDIT_GRID_COLS} gap-4 px-5 py-3 border-b border-[#1e1235] last:border-0 hover:bg-white/[0.02] transition-colors items-center`}
-                >
-                  <div className="flex items-center gap-1.5 text-xs text-slate-400 font-mono whitespace-nowrap">
-                    <Clock className="w-3 h-3 text-slate-600" />
-                    {formatTime(entry.ts)}
+              {groups.map((g, i) => {
+                const head = g.members[0]
+                const n = g.members.length
+                const isOpen = expanded.has(i)
+                const oldest = g.members[n - 1]
+                return (
+                  <div key={i} className="border-b border-[#1e1235] last:border-0">
+                    <button
+                      onClick={() => toggle(i)}
+                      aria-expanded={isOpen}
+                      className={`w-full grid ${AUDIT_GRID_COLS} gap-4 px-5 py-3 text-left hover:bg-white/[0.02] transition-colors items-center`}
+                    >
+                      <span className="text-slate-500">
+                        {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      </span>
+                      <div className="flex items-center gap-1.5 text-xs text-slate-400 font-mono whitespace-nowrap">
+                        <Clock className="w-3 h-3 text-slate-600" />
+                        {formatTime(head.ts)}
+                      </div>
+                      <span className="text-xs font-medium text-slate-200 truncate flex items-center gap-1.5" title={head.type}>
+                        {eventLabel(head)}
+                        {n > 1 && (
+                          <span className="shrink-0 rounded-full bg-slate-500/20 text-slate-300 border border-slate-500/30 px-1.5 py-0.5 text-[10px] font-mono font-bold">×{n}</span>
+                        )}
+                      </span>
+                      <span className="text-xs font-mono text-slate-400 truncate">
+                        {head.email || head.owner || head.actor || head.by || '—'}
+                      </span>
+                      <AuditStatusBadge status={auditStatus(head)} />
+                      <span className="text-xs font-mono text-slate-500 truncate" title={auditDetails(head)}>
+                        {auditDetails(head)}
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="px-5 pb-3 pt-1 bg-[#12081f]/50 space-y-2">
+                        {n > 1 && (
+                          <p className="text-[11px] text-slate-500 font-mono">{n} occurrences · {formatTime(oldest.ts)} → {formatTime(head.ts)}</p>
+                        )}
+                        {g.members.map((m, j) => (
+                          <div key={j}>
+                            {n > 1 && <p className="text-[10px] text-slate-600 font-mono mb-0.5">{formatTime(m.ts)}</p>}
+                            <pre className="text-[11px] font-mono text-slate-400 bg-[#0d0620] border border-[#2d1b4e] rounded-lg p-2.5 overflow-x-auto">{JSON.stringify(m, null, 2)}</pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <span className="text-xs font-medium text-slate-200 truncate" title={entry.type}>
-                    {eventLabel(entry)}
-                  </span>
-                  <span className="text-xs font-mono text-slate-400 truncate">
-                    {entry.email || entry.owner || entry.actor || entry.by || '—'}
-                  </span>
-                  <AuditStatusBadge status={auditStatus(entry)} />
-                  <span className="text-xs font-mono text-slate-500 truncate" title={auditDetails(entry)}>
-                    {auditDetails(entry)}
-                  </span>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
