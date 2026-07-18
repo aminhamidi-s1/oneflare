@@ -17,12 +17,14 @@ import { HA_PLAYBOOKS, loadHaWorkflowJson } from '../data/haPlaybooks.js'
 import { getMe, getTenants, getRunTarget, dnsAllowed } from '../lib/session.js'
 
 const TABS = [
-  { id: 'overview',  label: 'Overview',         icon: Info },
-  { id: 'how',       label: 'How It Works',      icon: Layers },
+  { id: 'run',       label: 'Run Attack',        icon: Play },
   { id: 'siem',      label: 'SIEM Detection',    icon: Shield },
   { id: 'playbook',  label: 'Response Playbook', icon: GitBranch },
-  { id: 'run',       label: 'Run Attack',        icon: Play },
 ]
+
+// Legacy deep-links (?tab=overview / ?tab=how) point at tabs that were merged
+// into Run Attack and SIEM Detection respectively — remap so old links resolve.
+const TAB_REMAP = { overview: 'run', how: 'siem' }
 
 function CopyButton({ text, label = 'Copy' }) {
   const [copied, setCopied] = useState(false)
@@ -315,6 +317,66 @@ function RichSiemDetection({ scenario, detection }) {
   )
 }
 
+// Scenario context, surfaced at the top of the Run Attack tab (was its own
+// "Overview" tab). Gives an operator the what/why + key facts right before they
+// fire the attack.
+function ScenarioOverviewBlock({ scenario }) {
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+        <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Scenario Overview</h3>
+        <p className="text-slate-300 leading-relaxed">{scenario.overview}</p>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MetaCard label="CF Product" value={scenario.cfProduct} />
+        <MetaCard label="Target" value={scenario.target} mono />
+        <MetaCard label="Detection Rule" value={scenario.detectionRule} mono />
+        <MetaCard label="Tactic" value={scenario.tactic} />
+      </div>
+    </div>
+  )
+}
+
+// Attack mechanics, surfaced at the top of the SIEM Detection tab (was its own
+// "How It Works" tab). Shows the attack flow + a sample Cloudflare log event so
+// the detection logic below reads in context of what generates it.
+function AttackFlowBlock({ scenario }) {
+  return (
+    <div className="space-y-5">
+      <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+        <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Attack Flow</h3>
+        <div className="space-y-0">
+          {scenario.howItWorks.map((step, i) => (
+            <div key={i} className="flex gap-3">
+              <div className="flex flex-col items-center shrink-0">
+                <div className="w-7 h-7 rounded-full bg-orange-500/10 border border-orange-500/30 flex items-center justify-center text-xs font-mono font-bold text-orange-400 shrink-0">
+                  {i + 1}
+                </div>
+                {i < scenario.howItWorks.length - 1 && (
+                  <div className="w-px flex-1 bg-gradient-to-b from-orange-500/20 to-transparent my-1 min-h-[24px]" />
+                )}
+              </div>
+              <div className="pt-0.5 pb-4">
+                <p className="text-sm text-slate-300 leading-relaxed">{step}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Sample CF Log Event</h3>
+          <CopyButton text={scenario.cfLogs} label="Copy JSON" />
+        </div>
+        <pre className="code-block text-xs leading-relaxed overflow-x-auto">
+          <code>{scenario.cfLogs}</code>
+        </pre>
+      </div>
+    </div>
+  )
+}
+
 export default function ScenarioDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -326,8 +388,9 @@ export default function ScenarioDetail() {
   // Deep-links (e.g. from the Architecture Hyperautomation index) can land
   // directly on a tab via ?tab=playbook.
   const requestedTab = searchParams.get('tab')
+  const resolvedTab = TAB_REMAP[requestedTab] || requestedTab
   const [activeTab, setActiveTab] = useState(
-    TABS.some(t => t.id === requestedTab) ? requestedTab : 'overview'
+    TABS.some(t => t.id === resolvedTab) ? resolvedTab : 'run'
   )
 
   // Run state
@@ -583,63 +646,13 @@ export default function ScenarioDetail() {
       {/* Tab content */}
       <div className="animate-[fadeIn_0.2s_ease-out]">
 
-        {/* === OVERVIEW === */}
-        {activeTab === 'overview' && (
-          <div className="space-y-5">
-            <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Scenario Overview</h3>
-              <p className="text-slate-300 leading-relaxed">{scenario.overview}</p>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <MetaCard label="CF Product" value={scenario.cfProduct} />
-              <MetaCard label="Target" value={scenario.target} mono />
-              <MetaCard label="Detection Rule" value={scenario.detectionRule} mono />
-              <MetaCard label="Tactic" value={scenario.tactic} />
-            </div>
-          </div>
-        )}
-
-        {/* === HOW IT WORKS === */}
-        {activeTab === 'how' && (
-          <div className="space-y-5">
-            <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
-              <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Attack Flow</h3>
-              <div className="space-y-0">
-                {scenario.howItWorks.map((step, i) => (
-                  <div key={i} className="flex gap-3">
-                    <div className="flex flex-col items-center shrink-0">
-                      <div className="w-7 h-7 rounded-full bg-orange-500/10 border border-orange-500/30 flex items-center justify-center text-xs font-mono font-bold text-orange-400 shrink-0">
-                        {i + 1}
-                      </div>
-                      {i < scenario.howItWorks.length - 1 && (
-                        <div className="w-px flex-1 bg-gradient-to-b from-orange-500/20 to-transparent my-1 min-h-[24px]" />
-                      )}
-                    </div>
-                    <div className="pt-0.5 pb-4">
-                      <p className="text-sm text-slate-300 leading-relaxed">{step}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-xl bg-[#1a0a2e] border border-[#2d1b4e] p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Sample CF Log Event</h3>
-                <CopyButton text={scenario.cfLogs} label="Copy JSON" />
-              </div>
-              <pre className="code-block text-xs leading-relaxed overflow-x-auto">
-                <code>{scenario.cfLogs}</code>
-              </pre>
-            </div>
-          </div>
-        )}
-
-        {/* === SIEM DETECTION === */}
+        {/* === SIEM DETECTION (with the merged-in attack mechanics on top) === */}
         {activeTab === 'siem' && (
-          scenario.siem ? (
-            <RichSiemDetection scenario={scenario} detection={detection} />
-          ) : (
+          <div className="space-y-5">
+            <AttackFlowBlock scenario={scenario} />
+            {scenario.siem ? (
+              <RichSiemDetection scenario={scenario} detection={detection} />
+            ) : (
           <div className="space-y-5">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <MetaCard label="Detection Rule" value={detection?.name ?? scenario.detectionRule} mono />
@@ -667,7 +680,8 @@ export default function ScenarioDetail() {
               </div>
             </div>
           </div>
-          )
+            )}
+          </div>
         )}
 
         {/* === RESPONSE PLAYBOOK === */}
@@ -743,9 +757,12 @@ export default function ScenarioDetail() {
           </div>
         )}
 
-        {/* === RUN ATTACK === */}
+        {/* === RUN ATTACK (with the merged-in scenario overview on top) === */}
         {activeTab === 'run' && (
           <div className="space-y-4">
+            {/* Scenario context — what this attack is and why it matters */}
+            <ScenarioOverviewBlock scenario={scenario} />
+
             {/* Warning banner */}
             <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 p-4 flex gap-3">
               <AlertTriangle className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
